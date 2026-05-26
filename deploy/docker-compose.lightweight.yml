@@ -1,0 +1,18 @@
+# Lightweight overlay — disables Neo4j to validate NFR-24 SQLite-only mode.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml up
+#
+# Or via the Makefile: `make compose-light`.
+
+services:
+  go:
+    environment:
+      NEO4J_ENABLED: "false"
+  neo4j:
+    # Replace the image with a no-op so the service exists for graph dependency
+    # resolution but doesn't actually consume resources.
+    image: hello-world
+    container_name: agent-mem-neo4j-noop
+    profiles: ["disabled"]   # never starts unless the disabled profile is requested
+    restart: "no"

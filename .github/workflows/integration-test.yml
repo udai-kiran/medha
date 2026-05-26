@@ -1,0 +1,60 @@
+name: Integration smoke
+
+on:
+  pull_request:
+    paths:
+      - "go/**"
+      - "py/**"
+      - "docker-compose.yml"
+      - "deploy/**"
+      - ".github/workflows/integration-test.yml"
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose up (lightweight: no Neo4j)
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml up -d --build
+
+      - name: Wait for Python health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5000/health > /dev/null; then echo "py healthy"; exit 0; fi
+            echo "waiting for py... ($i)"
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs py
+          exit 1
+
+      - name: Wait for Go health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3111/agentmemory/health > /dev/null; then echo "go healthy"; exit 0; fi
+            echo "waiting for go... ($i)"
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs go
+          exit 1
+
+      - name: Health snapshot
+        run: |
+          echo "--- Go ---"; curl -s http://localhost:3111/agentmemory/health
+          echo "--- Py ---"; curl -s http://localhost:5000/health
+
+      # Task 34 expands this with end-to-end observe → search flows.
+
+      - name: Compose down
+        if: always()
+        run: docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml down -v

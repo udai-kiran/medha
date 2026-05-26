@@ -1,0 +1,61 @@
+name: Go tests
+
+on:
+  pull_request:
+    paths:
+      - "go/**"
+      - ".github/workflows/go-test.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "go/**"
+      - ".github/workflows/go-test.yml"
+
+concurrency:
+  group: go-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./go
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go 1.26.3
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: go/go.sum
+
+      - name: Verify module
+        run: go mod verify
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: go
+
+      - name: Test with race + coverage
+        run: |
+          go test ./... -race -coverprofile=coverage.out -covermode=atomic
+
+      - name: Coverage report
+        run: |
+          go tool cover -func=coverage.out | tee coverage.txt
+          PCT=$(grep '^total:' coverage.txt | awk '{print $3}' | tr -d '%')
+          echo "Coverage: ${PCT}%"
+          # Warn (don't fail) below 70% during M0; tighten in Task 34.
+          awk -v p="$PCT" 'BEGIN{ if (p+0 < 70) print "::warning::go coverage " p "% < 70%" }'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-coverage
+          path: go/coverage.out

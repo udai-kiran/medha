@@ -1,0 +1,46 @@
+# golangci-lint configuration for the agent_mem Go service.
+# Keep this conservative on the skeleton; tighten in Task 33 / Task 34.
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - unconvert
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+    - gocritic
+    - gocyclo
+    - prealloc
+
+linters-settings:
+  gocyclo:
+    min-complexity: 20
+  revive:
+    rules:
+      - name: var-naming
+      - name: package-comments
+        disabled: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - gosec
+  max-issues-per-linter: 0
+  max-same-issues: 0

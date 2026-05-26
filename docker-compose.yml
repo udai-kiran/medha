@@ -1,0 +1,129 @@
+# medha — local development stack
+#
+# Default profile starts the full stack (Go + Python + Neo4j + RabbitMQ).
+# `--profile lightweight` omits Neo4j and verifies NFR-24 (SQLite-only).
+#
+# All services are gated on healthchecks so `compose up` returns only when
+# the API actually accepts traffic.
+
+services:
+  go:
+    build:
+      context: ./medha-api
+      args:
+        VERSION: ${VERSION:-dev}
+    image: medha-api:${VERSION:-dev}
+    container_name: medha-api
+    restart: unless-stopped
+    ports:
+      - "3111:3111"   # public API
+      - "3113:3113"   # viewer (Task 28)
+    environment:
+      PORT: "3111"
+      VIEWER_PORT: "3113"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SQLITE_PATH: /data/agentmemory.db
+      QUEUE_BACKEND: ${QUEUE_BACKEND:-rabbitmq}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      PYTHON_SERVICE_URL: http://medha-extraction:5000
+      NEO4J_ENABLED: ${NEO4J_ENABLED:-true}
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme-please}
+      AGENTMEMORY_SECRET: ${AGENTMEMORY_SECRET:-dev-secret-replace-me}
+    volumes:
+      - sqlite_data:/data
+    # In v2 we'd add `neo4j: {condition: service_healthy, required: false}` so
+    # the lightweight override can disable neo4j without breaking dependency
+    # resolution. v1 ignores `required:` — keep the dependency list to the
+    # services that must always be present (py + rabbitmq) and let the Go
+    # service degrade gracefully when neo4j is unavailable (ADR-0003).
+    depends_on:
+      py:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      # Self-probe via the binary's -healthcheck flag (no shell needed in distroless).
+      test: ["CMD", "/app/agent-mem-api", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [agentmem]
+
+  py:
+    build:
+      context: ./medha-extraction
+    image: medha-extraction:${VERSION:-dev}
+    container_name: medha-extraction
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      PY_PORT: "5000"
+      PY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-local}
+      AGENTMEMORY_AUTO_COMPRESS: "false"
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks: [agentmem]
+
+  neo4j:
+    image: neo4j:5.24-community
+    container_name: agent-mem-neo4j
+    # Default profile = always on. The `lightweight` profile (see
+    # deploy/docker-compose.lightweight.yml) overrides this service to a no-op
+    # so NFR-24 SQLite-only mode can be validated end-to-end.
+    restart: unless-stopped
+    ports:
+      - "7474:7474"   # browser
+      - "7687:7687"   # bolt
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme-please}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_memory_heap_max__size: 512M
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD:-changeme-please} 'RETURN 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [agentmem]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: agent-mem-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks: [agentmem]
+
+volumes:
+  sqlite_data:
+  neo4j_data:
+  neo4j_logs:
+
+networks:
+  agentmem:
+    driver: bridge

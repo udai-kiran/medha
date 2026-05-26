@@ -1,0 +1,60 @@
+name: Docker images
+
+on:
+  pull_request:
+    paths:
+      - "go/Dockerfile"
+      - "py/Dockerfile"
+      - "docker-compose.yml"
+      - ".github/workflows/docker-build.yml"
+  push:
+    branches: [main, master]
+  release:
+    types: [published]
+
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  go-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Go image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./go
+          file: ./go/Dockerfile
+          push: ${{ github.event_name == 'release' }}
+          tags: |
+            agent-mem-go:${{ github.sha }}
+            agent-mem-go:latest
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha,scope=go
+          cache-to: type=gha,mode=max,scope=go
+
+  py-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build Python image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./py
+          file: ./py/Dockerfile
+          push: ${{ github.event_name == 'release' }}
+          tags: |
+            agent-mem-py:${{ github.sha }}
+            agent-mem-py:latest
+          cache-from: type=gha,scope=py
+          cache-to: type=gha,mode=max,scope=py

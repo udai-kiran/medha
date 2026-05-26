@@ -1,0 +1,308 @@
+openapi: 3.1.0
+info:
+  title: agent_mem REST API
+  version: 0.1.0
+  description: |
+    Public agent-facing surface of the agent_mem service. All routes live
+    under the `/agentmemory` base path (see ADR-0004) except for infrastructure
+    routes (`/health`, viewer) which sit at the root.
+
+    This document is seeded in Task 2 with `/agentmemory/health` and grows as
+    later tasks (8, 18, 25, 26, 33) land routes. Task 35 finalises it.
+
+servers:
+  - url: http://localhost:3111
+    description: Local development
+
+paths:
+  /agentmemory/observe:
+    post:
+      summary: Capture an agent observation
+      description: |
+        Ingest a single HookPayload from an agent lifecycle hook. The handler:
+
+        1. Validates required fields and the `hookType` enum.
+        2. Applies the privacy filter (Task 10) BEFORE persistence — secrets
+           never reach storage or downstream LLM calls (NFR-10).
+        3. Deduplicates against a 5-minute rolling SHA-256 window per session.
+        4. Persists a `RawObservation`, enqueues async compression, and returns
+           in under 50 ms (NFR-2).
+
+        On `SessionEnd` the handler routes to the consolidation pipeline and
+        returns `202` without creating a new observation row.
+      operationId: postObserve
+      tags: [capture]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HookPayload"
+      responses:
+        "201":
+          description: Observation accepted; compression queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObserveResponse"
+        "202":
+          description: |
+            Either a duplicate observation (within the dedup window) or a
+            `SessionEnd` hook that triggered consolidation. `deduplicated` is
+            true in the first case; both share the 202 status to signal
+            "accepted, no new row".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ObserveResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /agentmemory/smart-search:
+    post:
+      summary: Hybrid search (BM25 + vector + graph fused via RRF)
+      description: |
+        Run a hybrid search over compressed observations. The default mode
+        runs all three engines (BM25 keyword, vector cosine similarity, graph
+        BFS) and fuses the rankings via Reciprocal Rank Fusion (k=60), then
+        applies a per-session diversity cap. Single-mode is supported for
+        debugging and fallback.
+      operationId: postSmartSearch
+      tags: [search]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmartSearchRequest"
+      responses:
+        "200":
+          description: Ranked results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmartSearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /agentmemory/search:
+    post:
+      summary: Alias for /smart-search
+      description: |
+        Identical to `/smart-search`. Provided so clients that prefer the
+        shorter URL don't have to special-case the hybrid path.
+      operationId: postSearch
+      tags: [search]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmartSearchRequest"
+      responses:
+        "200":
+          description: Ranked results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmartSearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /agentmemory/health:
+    get:
+      summary: Service health probe
+      description: |
+        Returns overall and per-component status. Neo4j is optional
+        (ADR-0003); when disabled, its component reports `degraded` and
+        the overall status is `degraded` rather than `down`.
+      operationId: getHealth
+      tags: [infra]
+      responses:
+        "200":
+          description: Health snapshot (always 200; the body reports degradation).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: degraded
+                version: dev
+                components:
+                  - name: api
+                    status: ok
+                  - name: neo4j
+                    status: degraded
+                    message: "disabled (NEO4J_ENABLED=false); SQLite-only mode"
+
+components:
+  schemas:
+    HookPayload:
+      type: object
+      required: [hookType, sessionId, timestamp]
+      properties:
+        hookType:
+          type: string
+          enum:
+            - session_start
+            - session_end
+            - user_prompt
+            - pre_tool_use
+            - post_tool_use
+            - post_tool_failure
+            - subagent_end
+            - notification
+        sessionId:
+          type: string
+          pattern: "^sess-[A-Za-z0-9_-]{4,}$"
+        project:
+          type: string
+        cwd:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        data:
+          description: Hook-specific body. Free-form JSON; tool fields (tool_name, tool_input, tool_output, user_prompt) are extracted when present.
+          type: object
+          additionalProperties: true
+
+    ObserveResponse:
+      type: object
+      required: [compressing, compressed]
+      properties:
+        observationId:
+          type: string
+        compressing:
+          type: boolean
+        compressed:
+          type: boolean
+        deduplicated:
+          type: boolean
+
+    SmartSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        project:
+          type: string
+        query:
+          type: string
+          minLength: 1
+        limit:
+          type: integer
+          minimum: 1
+          default: 10
+        mode:
+          type: string
+          enum: [bm25, vector, graph, hybrid]
+          default: hybrid
+
+    SmartSearchResponse:
+      type: object
+      required: [mode, query, results]
+      properties:
+        mode:
+          type: string
+        query:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmartSearchResult"
+
+    SmartSearchResult:
+      type: object
+      required: [observationId, relevance]
+      properties:
+        observationId:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        subtitle:
+          type: string
+        snippet:
+          type: string
+        concepts:
+          type: array
+          items: { type: string }
+        sessionId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        relevance:
+          type: number
+          format: double
+
+    HealthResponse:
+      type: object
+      required: [status, version, components]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        version:
+          type: string
+        components:
+          type: array
+          items:
+            $ref: "#/components/schemas/ComponentStatus"
+
+    ComponentStatus:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          description: Subsystem name (api, neo4j, queue, sqlite, python, ...)
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        message:
+          type: string
+          description: Optional explanation when not ok.
+
+    ErrorEnvelope:
+      type: object
+      required: [error, message]
+      description: |
+        Standard JSON shape for every error response. `fallback=true` indicates
+        a degraded result was returned (e.g. synthetic compression after an
+        LLM timeout) rather than a hard failure.
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable code (e.g. `validation_failed`).
+        message:
+          type: string
+          description: Human-readable detail.
+        fallback:
+          type: boolean
+
+  responses:
+    BadRequest:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+    InternalError:
+      description: Unexpected server-side error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        AGENTMEMORY_SECRET. Required on mutating routes once Task 33 wires
+        auth middleware. Read-only routes are unauthenticated for now.

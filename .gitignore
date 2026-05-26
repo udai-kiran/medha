@@ -1,0 +1,47 @@
+# Go
+/go/bin/
+/go/dist/
+/go/coverage.out
+/go/coverage.html
+*.test
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+
+# uv
+.python-version
+
+# Databases / runtime artifacts
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data/
+
+# Local env
+.env
+.env.local
+.env.*.local
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Build / Docker
+*.log
