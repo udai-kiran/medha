@@ -19,8 +19,13 @@ type Config struct {
 	ViewerPort int
 	LogLevel   string
 
-	// State
-	SQLitePath string
+	// PostgreSQL
+	PostgresHost     string
+	PostgresPort     int
+	PostgresUser     string
+	PostgresPassword string
+	PostgresDB       string
+	PostgresSSLMode  string
 
 	// Neo4j (optional — see ADR-0003)
 	Neo4jEnabled  bool
@@ -66,7 +71,12 @@ func FromEnv() *Config {
 		Port:                    getInt("PORT", 3111),
 		ViewerPort:              getInt("VIEWER_PORT", 3113),
 		LogLevel:                getString("LOG_LEVEL", "info"),
-		SQLitePath:              getString("SQLITE_PATH", "./data/agentmemory.db"),
+		PostgresHost:            getString("POSTGRES_HOST", "localhost"),
+		PostgresPort:            getInt("POSTGRES_PORT", 5432),
+		PostgresUser:            getString("POSTGRES_USER", "medha"),
+		PostgresPassword:        getString("POSTGRES_PASSWORD", ""),
+		PostgresDB:              getString("POSTGRES_DB", "medha"),
+		PostgresSSLMode:         getString("POSTGRES_SSLMODE", "disable"),
 		Neo4jEnabled:            getBool("NEO4J_ENABLED", false),
 		Neo4jURI:                getString("NEO4J_URI", "bolt://localhost:7687"),
 		Neo4jUsername:           getString("NEO4J_USERNAME", "neo4j"),

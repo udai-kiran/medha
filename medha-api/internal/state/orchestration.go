@@ -134,7 +134,7 @@ func (s *Store) AcquireLease(ctx context.Context, project, actionID, holderID st
 	key := Key(ScopeLeases, project, actionID)
 	var existing string
 	err = tx.QueryRowContext(ctx,
-		`SELECT value_json FROM kv WHERE scope = ? AND key = ?`,
+		`SELECT value_json FROM kv WHERE scope = $1 AND key = $2`,
 		string(ScopeLeases), key,
 	).Scan(&existing)
 

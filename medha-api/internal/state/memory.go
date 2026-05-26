@@ -160,7 +160,7 @@ func (s *Store) MarkRetrieved(ctx context.Context, ids []string) error {
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	q := fmt.Sprintf(`UPDATE memories SET last_retrieved_at = ? WHERE id IN (%s)`, placeholders)
+	q := fmt.Sprintf(`UPDATE memories SET last_retrieved_at = $1 WHERE id IN (%s)`, placeholders)
 	_, err := s.DB.ExecContext(ctx, q, args...)
 	return err
 }
@@ -168,14 +168,14 @@ func (s *Store) MarkRetrieved(ctx context.Context, ids []string) error {
 // UpdateMemoryStrength sets a new strength value. Used by Task 24's decay job.
 func (s *Store) UpdateMemoryStrength(ctx context.Context, id string, strength float64) error {
 	_, err := s.DB.ExecContext(ctx,
-		`UPDATE memories SET strength = ?, updated_at = ? WHERE id = ?`,
+		`UPDATE memories SET strength = $1, updated_at = $2 WHERE id = $3`,
 		strength, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err
 }
 
 // DeleteMemory hard-removes a memory row. Used by Task 24 for hard eviction.
 func (s *Store) DeleteMemory(ctx context.Context, id string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id)
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM memories WHERE id = $1`, id)
 	return err
 }
 
@@ -192,7 +192,7 @@ func (s *Store) EvictExpiredObservations(ctx context.Context, workingTTL, episod
 	episodicCutoff := now.Add(-episodicTTL).Format(time.RFC3339Nano)
 
 	res, err := s.DB.ExecContext(ctx,
-		`DELETE FROM observations WHERE compressed = 0 AND created_at < ?`, workingCutoff)
+		`DELETE FROM observations WHERE compressed = 0 AND created_at < $1`, workingCutoff)
 	if err != nil {
 		return 0, 0, err
 	}

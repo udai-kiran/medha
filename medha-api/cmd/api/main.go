@@ -50,13 +50,20 @@ func main() {
 	// State + capture-path collaborators. Queue (Task 12) and viewer (Task 28)
 	// remain NoOp until those tasks land; observations are still stored and
 	// served — they just don't trigger compression or live broadcasts.
-	store, err := state.Open(rootCtx, state.Options{Path: cfg.SQLitePath})
+	store, err := state.Open(rootCtx, state.Options{
+		Host:     cfg.PostgresHost,
+		Port:     cfg.PostgresPort,
+		User:     cfg.PostgresUser,
+		Password: cfg.PostgresPassword,
+		Database: cfg.PostgresDB,
+		SSLMode:  cfg.PostgresSSLMode,
+	})
 	if err != nil {
 		logger.Error("state.open", "err", err)
 		os.Exit(1)
 	}
 	defer func() { _ = store.Close() }()
-	logger.Info("state.ready", "path", store.Path, "schema_version", store.SchemaVersion)
+	logger.Info("state.ready", "db", cfg.PostgresDB, "host", cfg.PostgresHost, "schema_version", store.SchemaVersion)
 
 	// Async queue: in-memory by default (ADR-0001 / NFR-24). The API process
 	// publishes here; the cmd/worker process consumes. In the same-process

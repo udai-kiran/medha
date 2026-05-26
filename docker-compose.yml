@@ -1,7 +1,10 @@
 # medha — local development stack
 #
-# Default profile starts the full stack (Go + Python + Neo4j + RabbitMQ).
-# `--profile lightweight` omits Neo4j and verifies NFR-24 (SQLite-only).
+# Profiles:
+#   default: Go + Python + RabbitMQ (requires external PostgreSQL via POSTGRES_* env vars)
+#   --profile postgres: Includes embedded PostgreSQL service (for local dev)
+#   --profile neo4j: Includes Neo4j (optional, service degrades without it per ADR-0003)
+#   --profile postgres --profile neo4j: Full stack with embedded services
 #
 # All services are gated on healthchecks so `compose up` returns only when
 # the API actually accepts traffic.
@@ -22,7 +25,12 @@ services:
       PORT: "3111"
       VIEWER_PORT: "3113"
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      SQLITE_PATH: /data/agentmemory.db
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: medha
+      POSTGRES_PASSWORD: medha-password
+      POSTGRES_DB: medha
+      POSTGRES_SSLMODE: disable
       QUEUE_BACKEND: ${QUEUE_BACKEND:-rabbitmq}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       PYTHON_SERVICE_URL: http://medha-extraction:5000
@@ -31,8 +39,6 @@ services:
       NEO4J_USERNAME: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme-please}
       AGENTMEMORY_SECRET: ${AGENTMEMORY_SECRET:-dev-secret-replace-me}
-    volumes:
-      - sqlite_data:/data
     # In v2 we'd add `neo4j: {condition: service_healthy, required: false}` so
     # the lightweight override can disable neo4j without breaking dependency
     # resolution. v1 ignores `required:` — keep the dependency list to the
@@ -43,6 +49,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    # Note: When using --profile postgres, this will also wait for postgres service.
+    # When using external PostgreSQL, ensure DB is running before starting this service.
     healthcheck:
       # Self-probe via the binary's -healthcheck flag (no shell needed in distroless).
       test: ["CMD", "/app/agent-mem-api", "-healthcheck"]
@@ -76,13 +84,32 @@ services:
       start_period: 10s
     networks: [agentmem]
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: medha-postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: medha
+      POSTGRES_PASSWORD: medha-password
+      POSTGRES_DB: medha
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medha -d medha"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [agentmem]
+
   neo4j:
     image: neo4j:5.24-community
-    container_name: agent-mem-neo4j
-    # Default profile = always on. The `lightweight` profile (see
-    # deploy/docker-compose.lightweight.yml) overrides this service to a no-op
-    # so NFR-24 SQLite-only mode can be validated end-to-end.
+    container_name: medha-neo4j
     restart: unless-stopped
+    profiles: ["neo4j"]
     ports:
       - "7474:7474"   # browser
       - "7687:7687"   # bolt
@@ -120,7 +147,7 @@ services:
     networks: [agentmem]
 
 volumes:
-  sqlite_data:
+  postgres_data:
   neo4j_data:
   neo4j_logs:
 

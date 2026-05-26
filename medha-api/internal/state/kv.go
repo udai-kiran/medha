@@ -92,7 +92,7 @@ func (kv *KV) Put(ctx context.Context, scope Scope, key string, v any) error {
 	}
 	_, err = kv.db.ExecContext(ctx, `
         INSERT INTO kv (scope, key, value_json, updated_at)
-        VALUES (?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT(scope, key) DO UPDATE SET
             value_json = excluded.value_json,
             updated_at = excluded.updated_at
@@ -107,7 +107,7 @@ func (kv *KV) Get(ctx context.Context, scope Scope, key string, v any) error {
 	}
 	var blob string
 	err := kv.db.QueryRowContext(ctx,
-		`SELECT value_json FROM kv WHERE scope = ? AND key = ?`,
+		`SELECT value_json FROM kv WHERE scope = $1 AND key = $2`,
 		string(scope), key,
 	).Scan(&blob)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -124,7 +124,7 @@ func (kv *KV) Delete(ctx context.Context, scope Scope, key string) error {
 	if scope == "" || key == "" {
 		return errors.New("state.KV.Delete: scope and key required")
 	}
-	_, err := kv.db.ExecContext(ctx, `DELETE FROM kv WHERE scope = ? AND key = ?`, string(scope), key)
+	_, err := kv.db.ExecContext(ctx, `DELETE FROM kv WHERE scope = $1 AND key = $2`, string(scope), key)
 	return err
 }
 
@@ -132,7 +132,7 @@ func (kv *KV) Delete(ctx context.Context, scope Scope, key string) error {
 // inside the given scope. Cap is 1000 — callers needing more should paginate.
 func (kv *KV) ListByPrefix(ctx context.Context, scope Scope, prefix string) (map[string]string, error) {
 	rows, err := kv.db.QueryContext(ctx,
-		`SELECT key, value_json FROM kv WHERE scope = ? AND key LIKE ? ORDER BY key LIMIT 1000`,
+		`SELECT key, value_json FROM kv WHERE scope = $1 AND key LIKE $2 ORDER BY key LIMIT 1000`,
 		string(scope), prefix+"%",
 	)
 	if err != nil {

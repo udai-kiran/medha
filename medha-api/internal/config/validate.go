@@ -21,8 +21,17 @@ func (c *Config) Validate() error {
 	if c.Port == c.ViewerPort {
 		errs = append(errs, "PORT and VIEWER_PORT must differ")
 	}
-	if c.SQLitePath == "" {
-		errs = append(errs, "SQLITE_PATH is required")
+	if c.PostgresHost == "" {
+		errs = append(errs, "POSTGRES_HOST is required")
+	}
+	if c.PostgresPort < 1 || c.PostgresPort > 65535 {
+		errs = append(errs, fmt.Sprintf("POSTGRES_PORT out of range: %d", c.PostgresPort))
+	}
+	if c.PostgresUser == "" {
+		errs = append(errs, "POSTGRES_USER is required")
+	}
+	if c.PostgresDB == "" {
+		errs = append(errs, "POSTGRES_DB is required")
 	}
 	if c.PythonServiceURL == "" {
 		errs = append(errs, "PYTHON_SERVICE_URL is required")

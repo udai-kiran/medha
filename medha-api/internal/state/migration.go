@@ -54,7 +54,7 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 		return fmt.Errorf("apply: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO schema_version (version, name) VALUES (?, ?)`,
+		`INSERT INTO schema_version (version, name) VALUES ($1, $2)`,
 		m.version, m.name,
 	); err != nil {
 		return fmt.Errorf("record: %w", err)

@@ -29,7 +29,14 @@ func main() {
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	store, err := state.Open(rootCtx, state.Options{Path: cfg.SQLitePath})
+	store, err := state.Open(rootCtx, state.Options{
+		Host:     cfg.PostgresHost,
+		Port:     cfg.PostgresPort,
+		User:     cfg.PostgresUser,
+		Password: cfg.PostgresPassword,
+		Database: cfg.PostgresDB,
+		SSLMode:  cfg.PostgresSSLMode,
+	})
 	if err != nil {
 		logger.Error("state.open", "err", err)
 		os.Exit(1)

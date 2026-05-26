@@ -2,7 +2,10 @@ module github.com/udai-kiran/medha
 
 go 1.26.3
 
-require github.com/go-chi/chi/v5 v5.3.0
+require (
+	github.com/go-chi/chi/v5 v5.3.0
+	github.com/lib/pq v1.10.9
+)
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
