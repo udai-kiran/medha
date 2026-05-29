@@ -40,7 +40,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          working-directory: go
+          working-directory: medha-api
 
       - name: Test with race + coverage
         run: |
