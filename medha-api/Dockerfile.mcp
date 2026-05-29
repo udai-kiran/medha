@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1.7
+#
+# Minimal image for the agent_mem MCP stdio server (cmd/mcp).
+# Communicates over stdin/stdout — no ports exposed.
+# Run with: docker run --rm -i --env-file .env.mcp ghcr.io/udai-kiran/agent-mem-mcp:latest
+
+ARG GO_VERSION=1.26.3
+
+FROM golang:${GO_VERSION}-bookworm AS build
+WORKDIR /src
+
+COPY go.mod go.sum* ./
+RUN go mod download
+
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" \
+    -o /out/agent-mem-mcp ./cmd/mcp
+
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+WORKDIR /app
+COPY --from=build /out/agent-mem-mcp /app/agent-mem-mcp
+
+USER nonroot:nonroot
+ENTRYPOINT ["/app/agent-mem-mcp"]

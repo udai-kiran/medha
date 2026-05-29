@@ -33,6 +33,7 @@ env/
 
 # Local env
 .env
+.env.mcp
 .env.local
 .env.*.local
 
