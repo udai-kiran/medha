@@ -15,6 +15,14 @@ linters-settings:
     # Dispatch/registration functions like RegisterMemoryTools are inherently
     # complex; 85 gives room for large switch-style routers without noise.
     min-complexity: 85
+  revive:
+    rules:
+      - name: exported
+      - name: blank-imports
+      - name: redefines-builtin-id
+      - name: var-naming
+      # unused-parameter is disabled: HTTP handlers and interface implementations
+      # must match their signature even when some params are unused.
 
 issues:
   exclude-rules:
