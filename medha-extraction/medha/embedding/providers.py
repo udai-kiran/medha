@@ -55,7 +55,8 @@ def _check_fingerprint(settings: Settings) -> None:
     current = settings.embedding_fingerprint()
     try:
         if os.path.exists(fp_path):
-            stored = open(fp_path).read().strip()  # noqa: WPS515
+            with open(fp_path) as _f:
+                stored = _f.read().strip()
             if stored and stored != current:
                 logger.warning(
                     "embedding.model_changed — vector index may be stale; "

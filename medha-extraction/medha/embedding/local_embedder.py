@@ -19,7 +19,6 @@ from collections.abc import Iterable
 
 from medha.embedding.providers import Embedder, EmbeddingResult
 
-
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
 

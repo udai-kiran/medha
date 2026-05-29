@@ -12,15 +12,15 @@ from medha.models import RawObservation
 
 
 def make_raw(**kwargs: object) -> RawObservation:
-    base = dict(
-        id="obs-1",
-        sessionId="sess-1",
-        timestamp=datetime.now(UTC),
-        hookType="post_tool_use",
-        modality="text",
-        raw={},
-    )
-    base.update(kwargs)
+    base: dict[str, object] = {
+        "id": "obs-1",
+        "sessionId": "sess-1",
+        "timestamp": datetime.now(UTC),
+        "hookType": "post_tool_use",
+        "modality": "text",
+        "raw": {},
+        **kwargs,
+    }
     return RawObservation.model_validate(base)
 
 

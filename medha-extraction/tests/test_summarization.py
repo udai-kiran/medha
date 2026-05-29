@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -20,7 +18,9 @@ def _digests() -> list[ObservationDigest]:
     return [
         ObservationDigest(
             title="Read auth.ts",
-            narrative="Examined the JWT validation middleware. Decided to use jose over jsonwebtoken.",
+            narrative=(
+                "Examined the JWT validation middleware. Decided to use jose over jsonwebtoken."
+            ),
             concepts=["auth", "jwt"],
             files=["src/auth.ts"],
             facts=["Uses jose library"],

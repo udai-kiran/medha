@@ -186,7 +186,10 @@ def _parse_llm(text: str, session_id: str) -> SessionSummary | None:
         if not pm:
             return []
         inner = pm.group(1)
-        return [m.group(1).strip() for m in re.finditer(rf"<{item}>(.*?)</{item}>", inner, re.DOTALL)]
+        return [
+            m.group(1).strip()
+            for m in re.finditer(rf"<{item}>(.*?)</{item}>", inner, re.DOTALL)
+        ]
 
     title = _scalar("title")
     narrative = _scalar("narrative")

@@ -19,7 +19,6 @@ from collections.abc import Iterable
 from medha.extraction.types import classify_subtype
 from medha.models import Entity
 
-
 _PASCAL_RE = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+){1,}\b")
 _CAMEL_RE = re.compile(r"\b[a-z]+(?:[A-Z][a-z0-9]+){1,}\b")
 _SNAKE_RE = re.compile(r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+){1,}\b")

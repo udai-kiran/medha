@@ -8,9 +8,9 @@ Bifrost gateway using the OpenAI-compatible embeddings endpoint.
 from medha.embedding.local_embedder import LocalEmbedder
 from medha.embedding.openai_embedder import OpenAIEmbedder
 from medha.embedding.providers import (
+    PROVIDER_DIMENSIONS,
     Embedder,
     EmbeddingResult,
-    PROVIDER_DIMENSIONS,
     pick_embedder,
 )
 

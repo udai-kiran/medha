@@ -19,19 +19,23 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
-
 from pydantic import BaseModel, Field
 
 from medha import __version__
-from medha.compression import LLMCompressor, LLMCompressorConfig, SyntheticCompressor, validate_compressed
+from medha.compression import (
+    LLMCompressor,
+    LLMCompressorConfig,
+    SyntheticCompressor,
+    validate_compressed,
+)
 from medha.config import Settings, get_settings
 from medha.embedding import pick_embedder
-from medha.enrichment import EnrichmentCache, Enricher, WikipediaEnricher
+from medha.enrichment import Enricher, EnrichmentCache, WikipediaEnricher
 from medha.extraction import default_pipeline, extract_relationships
 from medha.llm import build_llm_client
 from medha.models import CompressedObservation, Entity, RawObservation, Relationship
-from medha.summarization import ObservationDigest, synthetic_session_summary
-from medha.summarization.session import SessionSummary, SessionSummarizer, SessionSummarizerConfig
+from medha.summarization import ObservationDigest
+from medha.summarization.session import SessionSummarizer, SessionSummarizerConfig, SessionSummary
 from medha.utils.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -73,7 +77,9 @@ async def lifespan(app: FastAPI) -> Any:
         "compress": compress_client.name if compress_client else "synthetic",
         "summarize": summarize_client.name if summarize_client else "synthetic",
         "extract": settings.resolve_stage_model("extract") or "heuristic",
-        "embed": f"bifrost:{settings.embedding_fingerprint()}" if settings.embedding_model else "local",
+        "embed": (
+            f"bifrost:{settings.embedding_fingerprint()}" if settings.embedding_model else "local"
+        ),
     }
     logger.info("py.startup", extra={"version": __version__, "stages": stage_map})
     yield
@@ -102,7 +108,11 @@ async def health() -> dict[str, Any]:
             "compress": compressor.name if compressor else "synthetic",
             "summarize": summarizer.name if summarizer else "synthetic",
             "extract": settings.resolve_stage_model("extract") or "heuristic",
-            "embed": f"bifrost:{settings.embedding_fingerprint()}" if settings.embedding_model else "local",
+            "embed": (
+                f"bifrost:{settings.embedding_fingerprint()}"
+                if settings.embedding_model
+                else "local"
+            ),
         },
     }
 
@@ -319,7 +329,7 @@ async def generate_title(req: TitleRequest) -> TitleResponse:
                 requests_total.labels(route="/title", status="200").inc()
                 return TitleResponse(title=title[:80], generated=True)
         except Exception:
-            pass
+            logger.debug("title generation failed", exc_info=True)
     # Fallback: first 8 words
     words = req.content.split()[:8]
     title = " ".join(words)

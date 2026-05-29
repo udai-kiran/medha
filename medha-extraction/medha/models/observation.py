@@ -27,7 +27,9 @@ class RawObservation(BaseModel):
     user_prompt: str | None = Field(default=None, alias="userPrompt")
     raw: dict[str, Any] = Field(default_factory=dict)
     modality: Modality = "text"
-    image_data: str | None = Field(default=None, alias="imageData", description="data:image/... payload")
+    image_data: str | None = Field(
+        default=None, alias="imageData", description="data:image/... payload"
+    )
     has_secrets: bool = Field(default=False, alias="hasSecrets")
 
     model_config = {"populate_by_name": True}

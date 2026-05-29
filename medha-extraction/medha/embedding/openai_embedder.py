@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from medha.embedding.providers import Embedder, EmbeddingResult
+from medha.embedding.providers import EmbeddingResult
 
 logger = logging.getLogger(__name__)
 

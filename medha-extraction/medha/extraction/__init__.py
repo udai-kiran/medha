@@ -10,9 +10,9 @@ can drop them in once the runtime dependencies are pinned.
 
 from medha.extraction.heuristic_extractor import HeuristicExtractor
 from medha.extraction.pipeline import (
-    Extractor,
     ExtractionPipeline,
     ExtractionResult,
+    Extractor,
     default_pipeline,
 )
 from medha.extraction.relationships import (

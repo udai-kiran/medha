@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from medha.extraction.heuristic_extractor import HeuristicExtractor
 from medha.models import Relationship
 
-
 _VERB_TO_TYPE: dict[str, str] = {
     "depends on": "DEPENDS_ON",
     "imports": "DEPENDS_ON",
@@ -59,7 +58,11 @@ def _compile_patterns() -> list[_Pattern]:
     out: list[_Pattern] = []
     for verb, rel in _VERB_TO_TYPE.items():
         # Word boundary on each side; allow filler words between subject and verb.
-        pattern = rf"([A-Za-z_][\w./]*?(?:\s+[A-Za-z_][\w./]*?){{0,3}})\s+{re.escape(verb)}\s+([A-Za-z_][\w./]*?(?:\s+[A-Za-z_][\w./]*?){{0,3}})(?=[\s,.;:]|$)"
+        obj = r"([A-Za-z_][\w./]*?(?:\s+[A-Za-z_][\w./]*?){0,3})"
+        pattern = (
+            rf"([A-Za-z_][\w./]*?(?:\s+[A-Za-z_][\w./]*?){{0,3}})"
+            rf"\s+{re.escape(verb)}\s+{obj}(?=[\s,.;:]|$)"
+        )
         out.append(_Pattern(verb=verb, rel=rel, regex=re.compile(pattern, re.IGNORECASE)))
     return out
 
@@ -72,7 +75,9 @@ class HeuristicRelationshipExtractor:
 
     name = "heuristic_relations"
 
-    def __call__(self, text: str, *, source_observation_id: str | None = None) -> list[Relationship]:
+    def __call__(
+        self, text: str, *, source_observation_id: str | None = None
+    ) -> list[Relationship]:
         if not text:
             return []
         out: list[Relationship] = []

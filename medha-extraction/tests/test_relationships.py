@@ -69,4 +69,7 @@ def test_extract_endpoint_includes_relationships(client: TestClient) -> None:
     if out["relationships"]:
         rel = out["relationships"][0]
         # field is sourceObservationId via alias
-        assert rel.get("sourceObservationId") == "obs-1" or rel.get("source_observation_id") == "obs-1"
+        assert (
+            rel.get("sourceObservationId") == "obs-1"
+            or rel.get("source_observation_id") == "obs-1"
+        )

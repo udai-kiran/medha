@@ -20,7 +20,6 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Protocol
 
 from medha.compression.synthetic_compressor import synthetic_compress
 from medha.config import Settings
@@ -100,7 +99,7 @@ def parse_response(text: str, raw: RawObservation) -> CompressedObservation | No
 
     # Try ET for the well-formed case.
     try:
-        root = ET.fromstring(envelope)
+        root = ET.fromstring(envelope)  # noqa: S314 — input is LLM-generated, not user-supplied
     except ET.ParseError:
         # Fall back to regex extraction of the scalar fields.
         return _parse_lenient(envelope, raw)

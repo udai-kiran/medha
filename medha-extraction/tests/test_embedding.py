@@ -31,7 +31,9 @@ async def test_local_embedder_l2_normalised() -> None:
 @pytest.mark.asyncio()
 async def test_local_embedder_similar_texts_correlate() -> None:
     e = LocalEmbedder(dimension=384)
-    r = await e.embed(["JWT authentication token", "authentication token JWT", "unrelated yak shaving"])
+    r = await e.embed(
+        ["JWT authentication token", "authentication token JWT", "unrelated yak shaving"]
+    )
     v1, v2, v3 = r.vectors
     sim12 = sum(a * b for a, b in zip(v1, v2, strict=True))
     sim13 = sum(a * b for a, b in zip(v1, v3, strict=True))
