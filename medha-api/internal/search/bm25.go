@@ -29,9 +29,8 @@ type SearchEngine interface {
 	Search(ctx context.Context, project, query string, limit int) ([]Hit, error)
 }
 
-// BM25 is the keyword search engine. It owns its own SQLite tables (created
-// via Migrate; see Task 14 migration below) so Task 6's core schema doesn't
-// pre-commit to index-specific shape.
+// BM25 is the keyword search engine. It owns its own tables (created via
+// Migrate) so Task 6's core schema doesn't pre-commit to index-specific shape.
 //
 // BM25 parameters use the standard k1=1.2, b=0.75 defaults.
 type BM25 struct {
@@ -63,9 +62,7 @@ func NewBM25(ctx context.Context, s *state.Store) (*BM25, error) {
 	return b, nil
 }
 
-// ensureBM25Schema creates the BM25 index tables. Owned by Task 14 (per Task 6
-// notes), so we use a small ad-hoc migration here rather than touching the
-// core migration list.
+// ensureBM25Schema creates the BM25 index tables.
 func ensureBM25Schema(ctx context.Context, db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS bm25_docs (
@@ -115,11 +112,9 @@ func (b *BM25) Index(ctx context.Context, docID, project, text string) error {
 	}
 	tokens := Tokenize(text)
 	if len(tokens) == 0 {
-		// Empty doc; we still record a doc row so search counts are accurate.
 		return b.upsertDoc(ctx, docID, project, 0, nil)
 	}
 
-	// Compute TF table.
 	tf := make(map[string]int, len(tokens))
 	for _, t := range tokens {
 		tf[t]++
@@ -135,13 +130,12 @@ func (b *BM25) upsertDoc(ctx context.Context, docID, project string, docLen int,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Remove any prior postings for this doc.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM bm25_postings WHERE doc_id = ?`, docID); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM bm25_postings WHERE doc_id = $1`, docID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO bm25_docs (doc_id, project, doc_len, indexed_at)
-        VALUES (?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT(doc_id) DO UPDATE SET
             project    = excluded.project,
             doc_len    = excluded.doc_len,
@@ -152,7 +146,8 @@ func (b *BM25) upsertDoc(ctx context.Context, docID, project string, docLen int,
 	for term, count := range tf {
 		if _, err := tx.ExecContext(ctx, `
             INSERT INTO bm25_postings (term, doc_id, tf)
-            VALUES (?, ?, ?)
+            VALUES ($1, $2, $3)
+            ON CONFLICT(term, doc_id) DO UPDATE SET tf = excluded.tf
         `, term, docID, count); err != nil {
 			return err
 		}
@@ -161,8 +156,6 @@ func (b *BM25) upsertDoc(ctx context.Context, docID, project string, docLen int,
 		return err
 	}
 
-	// Invalidate caches (write-through is the simpler invariant). totalDocs
-	// recomputes lazily on next query via warm().
 	b.mu.Lock()
 	b.dfCache = make(map[string]int)
 	b.mu.Unlock()
@@ -171,10 +164,10 @@ func (b *BM25) upsertDoc(ctx context.Context, docID, project string, docLen int,
 
 // Delete drops a doc from the index.
 func (b *BM25) Delete(ctx context.Context, docID string) error {
-	if _, err := b.store.DB.ExecContext(ctx, `DELETE FROM bm25_postings WHERE doc_id = ?`, docID); err != nil {
+	if _, err := b.store.DB.ExecContext(ctx, `DELETE FROM bm25_postings WHERE doc_id = $1`, docID); err != nil {
 		return err
 	}
-	if _, err := b.store.DB.ExecContext(ctx, `DELETE FROM bm25_docs WHERE doc_id = ?`, docID); err != nil {
+	if _, err := b.store.DB.ExecContext(ctx, `DELETE FROM bm25_docs WHERE doc_id = $1`, docID); err != nil {
 		return err
 	}
 	b.mu.Lock()
@@ -196,7 +189,6 @@ func (b *BM25) Search(ctx context.Context, project, query string, limit int) ([]
 		return nil, nil
 	}
 
-	// IDF weighting.
 	const (
 		k1 = 1.2
 		bp = 0.75
@@ -210,21 +202,19 @@ func (b *BM25) Search(ctx context.Context, project, query string, limit int) ([]
 		if df == 0 {
 			continue
 		}
-		// BM25 IDF with the +0.5 / +0.5 / +1 smoothing.
 		idfByTerm[t] = math.Log((float64(b.totalDocs)-float64(df)+0.5)/(float64(df)+0.5) + 1)
 	}
 	if len(idfByTerm) == 0 {
 		return nil, nil
 	}
 
-	// Score per doc: sum over terms.
 	scores := make(map[string]float64)
 	for term, idf := range idfByTerm {
 		rows, err := b.store.DB.QueryContext(ctx, `
             SELECT p.doc_id, p.tf, d.doc_len
             FROM bm25_postings p JOIN bm25_docs d ON d.doc_id = p.doc_id
-            WHERE p.term = ? AND (? = '' OR d.project = ?)
-        `, term, project, project)
+            WHERE p.term = $1 AND ($2 = '' OR d.project = $2)
+        `, term, project)
 		if err != nil {
 			return nil, err
 		}
@@ -244,7 +234,6 @@ func (b *BM25) Search(ctx context.Context, project, query string, limit int) ([]
 		}
 	}
 
-	// Sort and trim.
 	hits := make([]Hit, 0, len(scores))
 	for id, sc := range scores {
 		hits = append(hits, Hit{ID: id, Score: sc})
@@ -266,7 +255,7 @@ func (b *BM25) docFrequency(ctx context.Context, term string) (int, error) {
 
 	var df int
 	if err := b.store.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM bm25_postings WHERE term = ?`, term,
+		`SELECT COUNT(*) FROM bm25_postings WHERE term = $1`, term,
 	).Scan(&df); err != nil {
 		return 0, err
 	}

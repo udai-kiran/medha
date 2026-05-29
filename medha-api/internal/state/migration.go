@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // migration is a single forward-only schema step.
@@ -20,7 +21,7 @@ func Migrate(ctx context.Context, db *sql.DB) (int, error) {
         CREATE TABLE IF NOT EXISTS schema_version (
             version    INTEGER PRIMARY KEY,
             name       TEXT NOT NULL,
-            applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            applied_at TEXT NOT NULL DEFAULT ''
         )
     `); err != nil {
 		return 0, fmt.Errorf("create schema_version: %w", err)
@@ -54,8 +55,8 @@ func applyMigration(ctx context.Context, db *sql.DB, m migration) error {
 		return fmt.Errorf("apply: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO schema_version (version, name) VALUES ($1, $2)`,
-		m.version, m.name,
+		`INSERT INTO schema_version (version, name, applied_at) VALUES ($1, $2, $3)`,
+		m.version, m.name, time.Now().UTC().Format(time.RFC3339Nano),
 	); err != nil {
 		return fmt.Errorf("record: %w", err)
 	}

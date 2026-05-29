@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class CompressedObservation(BaseModel):
     """The compact, searchable form of an observation.
 
-    Mirrors `go/internal/models/observation.go` `CompressedObservation`.
+    Mirrors `medha-api/internal/models/observation.go` `CompressedObservation`.
     """
 
     id: str = Field(..., description="Same id as the originating RawObservation")

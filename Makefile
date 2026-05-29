@@ -26,7 +26,8 @@ setup:
 
 build:
 	cd $(GO_DIR) && go build -o bin/agent-mem-api ./cmd/api
-	# worker binary appears in Task 12
+	cd $(GO_DIR) && go build -o bin/agent-mem-mcp ./cmd/mcp
+	cd $(GO_DIR) && go build -o bin/agent-mem-mcp-shim ./cmd/mcp-shim
 	@if [ -d "$(GO_DIR)/cmd/worker" ]; then cd $(GO_DIR) && go build -o bin/agent-mem-worker ./cmd/worker; fi
 
 test:

@@ -35,6 +35,18 @@ func (a OrchestrationAPI) Register(r chi.Router) {
 
 	r.Post("/signals", a.SendSignal)
 	r.Get("/signals", a.ListInbox)
+
+	// G20: Checkpoints + Sentinels.
+	r.Post("/checkpoints", a.CreateCheckpoint)
+	r.Post("/checkpoints/{id}/satisfy", a.SatisfyCheckpoint)
+	r.Post("/sentinels", a.CreateSentinel)
+	r.Post("/sentinels/{id}/trigger", a.TriggerSentinel)
+
+	// G21: Sketches + Crystallization.
+	r.Post("/sketches", a.CreateSketch)
+	r.Post("/sketches/{id}/promote", a.PromoteSketch)
+	r.Post("/actions/crystallize", a.Crystallize)
+	r.Get("/next", a.NextAction)
 }
 
 // CreateAction body — server assigns id if absent.
@@ -262,6 +274,128 @@ func (a OrchestrationAPI) ListInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"signals": out})
+}
+
+// G20: Checkpoints + Sentinels.
+
+func (a OrchestrationAPI) CreateCheckpoint(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID            string `json:"id"`
+		Project       string `json:"project"`
+		ConditionExpr string `json:"conditionExpr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if body.ID == "" {
+		body.ID = "cp-" + randHex(8)
+	}
+	if err := a.Store.CreateCheckpoint(r.Context(), body.Project, body.ID, body.ConditionExpr); err != nil {
+		WriteError(w, http.StatusInternalServerError, "create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"checkpointId": body.ID})
+}
+
+func (a OrchestrationAPI) SatisfyCheckpoint(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := a.Store.SatisfyCheckpoint(r.Context(), id); err != nil {
+		WriteError(w, http.StatusInternalServerError, "satisfy_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"satisfied": true})
+}
+
+func (a OrchestrationAPI) CreateSentinel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID           string `json:"id"`
+		Project      string `json:"project"`
+		EventPattern string `json:"eventPattern"`
+		HandlerURL   string `json:"handlerUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if body.ID == "" {
+		body.ID = "snt-" + randHex(8)
+	}
+	if err := a.Store.CreateSentinel(r.Context(), body.Project, body.ID, body.EventPattern, body.HandlerURL); err != nil {
+		WriteError(w, http.StatusInternalServerError, "create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"sentinelId": body.ID})
+}
+
+func (a OrchestrationAPI) TriggerSentinel(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	handlerURL, err := a.Store.TriggerSentinel(r.Context(), id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "trigger_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"triggered": true, "handlerUrl": handlerURL})
+}
+
+// G21: Sketches + Crystallization.
+
+func (a OrchestrationAPI) CreateSketch(w http.ResponseWriter, r *http.Request) {
+	var sketch state.SketchRow
+	if err := json.NewDecoder(r.Body).Decode(&sketch); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if sketch.ID == "" {
+		sketch.ID = "sk-" + randHex(8)
+	}
+	if err := a.Store.CreateSketch(r.Context(), &sketch); err != nil {
+		WriteError(w, http.StatusInternalServerError, "create_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"sketchId": sketch.ID})
+}
+
+func (a OrchestrationAPI) PromoteSketch(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	project := r.URL.Query().Get("project")
+	routine, err := a.Store.PromoteSketch(r.Context(), project, id)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "promote_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, routine)
+}
+
+func (a OrchestrationAPI) Crystallize(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Project   string   `json:"project"`
+		ActionIDs []string `json:"actionIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	action, err := a.Store.Crystallize(r.Context(), body.Project, body.ActionIDs)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "crystallize_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, action)
+}
+
+func (a OrchestrationAPI) NextAction(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	action, err := a.Store.GetNextAction(r.Context(), project)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "next_failed", err.Error())
+		return
+	}
+	if action == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"action": nil, "message": "no unblocked actions"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"action": action})
 }
 
 // Ensure crypto/rand is imported (matches randHex in memories.go).

@@ -37,7 +37,7 @@ func Health(cfg *config.Config, probes ...func() ComponentStatus) http.HandlerFu
 			components = append(components, ComponentStatus{
 				Name:    "neo4j",
 				Status:  "degraded",
-				Message: "disabled (NEO4J_ENABLED=false); SQLite-only mode",
+				Message: "disabled (NEO4J_ENABLED=false); PostgreSQL-only mode",
 			})
 		}
 

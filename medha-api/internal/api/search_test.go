@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,15 +14,12 @@ import (
 	"github.com/udai-kiran/medha/internal/dedup"
 	"github.com/udai-kiran/medha/internal/search"
 	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 func newSearchRouter(t *testing.T) (http.Handler, *state.Store, *search.BM25) {
 	t.Helper()
-	store, err := state.Open(context.Background(), state.Options{Path: filepath.Join(t.TempDir(), "search.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := testutil.OpenStore(t)
 
 	bm25, err := search.NewBM25(context.Background(), store)
 	if err != nil {

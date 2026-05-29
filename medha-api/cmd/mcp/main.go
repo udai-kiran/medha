@@ -58,9 +58,10 @@ func main() {
 	graph := search.NewGraphIndex(store)
 	hybrid := &search.Hybrid{BM25: bm25, Vector: vec, Graph: graph, K: 60}
 
+	deps := mcp.MemoryToolsDeps{Store: store, Search: hybrid, PythonBaseURL: cfg.PythonServiceURL}
 	srv := mcp.NewServer("agent_mem", "0.1.0", logger)
-	mcp.RegisterMemoryTools(srv, mcp.MemoryToolsDeps{Store: store, Search: hybrid})
-	mcp.RegisterMemoryResources(srv, mcp.MemoryToolsDeps{Store: store, Search: hybrid})
+	mcp.RegisterMemoryTools(srv, deps)
+	mcp.RegisterMemoryResources(srv, deps)
 	mcp.RegisterMemoryPrompts(srv)
 
 	// Soft-shutdown handler.

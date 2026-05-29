@@ -2,7 +2,8 @@ package state
 
 import (
 	"context"
-	"path/filepath"
+	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -10,8 +11,34 @@ import (
 
 func openTest(t *testing.T) *Store {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "test.db")
-	s, err := Open(context.Background(), Options{Path: path})
+	host := os.Getenv("POSTGRES_TEST_HOST")
+	if host == "" {
+		t.Skip("POSTGRES_TEST_HOST not set; skipping PostgreSQL integration test")
+	}
+	port, _ := strconv.Atoi(os.Getenv("POSTGRES_TEST_PORT"))
+	if port == 0 {
+		port = 5432
+	}
+	user := os.Getenv("POSTGRES_TEST_USER")
+	if user == "" {
+		user = "medha"
+	}
+	password := os.Getenv("POSTGRES_TEST_PASSWORD")
+	if password == "" {
+		password = "medha-password"
+	}
+	database := os.Getenv("POSTGRES_TEST_DB")
+	if database == "" {
+		database = "medha_test"
+	}
+	s, err := Open(context.Background(), Options{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		Password: password,
+		Database: database,
+		SSLMode:  "disable",
+	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -213,6 +240,6 @@ func TestWAL_ConcurrentReadsDontBlockWriter(t *testing.T) {
 	case <-done:
 		// ok
 	case <-deadline:
-		t.Fatal("readers/writer did not finish within deadline (WAL likely off)")
+		t.Fatal("readers/writer did not finish within deadline")
 	}
 }

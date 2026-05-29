@@ -16,13 +16,14 @@ import (
 // capture/search side. The zero value gives a usable router (health-only)
 // so the M0 skeleton path still works.
 type RouterDeps struct {
-	Observe     ObserveDeps        // Task 8  — set Store/Deduper/Enqueuer/Broadcaster/SessionEnd
-	Search      SearchDeps         // Task 18 — set Hybrid/Store
-	IndexBus    IndexBus           // Task 13 callback — notifies search indexes when a compression lands
-	MCP         http.Handler       // Task 26 — optional MCP-over-HTTP proxy
-	Metrics     *telemetry.Metrics // Task 29 — Prometheus registry
-	AuthSecret  string             // Task 33 — Bearer token; empty disables auth
-	RateLimiter *RateLimiter       // Task 33 — nil disables rate limiting
+	Observe       ObserveDeps        // Task 8  — set Store/Deduper/Enqueuer/Broadcaster/SessionEnd
+	Search        SearchDeps         // Task 18 — set Hybrid/Store
+	IndexBus      IndexBus           // Task 13 callback — notifies search indexes when a compression lands
+	MCP           http.Handler       // Task 26 — optional MCP-over-HTTP proxy
+	Metrics       *telemetry.Metrics // Task 29 — Prometheus registry
+	AuthSecret    string             // Task 33 — Bearer token; empty disables auth
+	RateLimiter   *RateLimiter       // Task 33 — nil disables rate limiting
+	PythonBaseURL string             // G29 — for vision embedding proxy
 }
 
 // NewRouter builds the API router. Keep this function free of business
@@ -58,6 +59,21 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 			InternalAPI{Store: deps.Observe.Store, IndexBus: deps.IndexBus}.RegisterPublic(r)
 			OrchestrationAPI{Store: deps.Observe.Store}.Register(r)
 			TeamAPI{Store: deps.Observe.Store}.Register(r)
+			ProfileAPI{Store: deps.Observe.Store}.Register(r)
+			PatternsAPI{Store: deps.Observe.Store}.Register(r)
+			TimelineAPI{Store: deps.Observe.Store}.Register(r)
+			ExportAPI{Store: deps.Observe.Store}.Register(r)
+			DiagnoseAPI{Store: deps.Observe.Store}.Register(r)
+			ConversationsAPI{Store: deps.Observe.Store}.Register(r)
+			PreferencesAPI{Store: deps.Observe.Store}.Register(r)
+			FactsAPI{Store: deps.Observe.Store}.Register(r)
+			TracesAPI{Store: deps.Observe.Store}.Register(r)
+			EntitiesAPI{Store: deps.Observe.Store}.Register(r)
+			SlotsAPI{Store: deps.Observe.Store}.Register(r)
+			GovernanceAPI{Store: deps.Observe.Store}.Register(r)
+			AdvancedRetrievalAPI{Store: deps.Observe.Store}.Register(r)
+			PlatformAPI{Store: deps.Observe.Store, PythonBaseURL: deps.PythonBaseURL}.Register(r)
+			ContextAPI{Store: deps.Observe.Store}.Register(r)
 		}
 		if deps.Search.Hybrid != nil {
 			r.Post("/smart-search", SmartSearchHandler(deps.Search))

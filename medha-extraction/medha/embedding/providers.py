@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
 from medha.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -29,21 +33,65 @@ class Embedder(Protocol):
     async def embed(self, texts: list[str]) -> EmbeddingResult: ...
 
 
-# Default output dimensions per provider. The local provider is fixed at 384
-# (matches Xenova all-MiniLM-L6-v2) so projects can switch from local to
-# Xenova without a re-index.
+# Known output dimensions per model. Bare model names (no vendor prefix).
 PROVIDER_DIMENSIONS: dict[str, int] = {
     "local": 384,
-    "openai": 1536,
-    "gemini": 768,
-    "voyage": 1024,
+    # OpenAI-compatible models accessible via Bifrost
+    "text-embedding-3-small": 1536,
+    "text-embedding-3-large": 3072,
+    "text-embedding-ada-002": 1536,
 }
 
 
-def pick_embedder(settings: Settings) -> Embedder:
-    """Pick an Embedder based on settings; the local one is always available."""
-    # Real providers land alongside Task 19's LLM clients; for M2 we route
-    # everything through LocalEmbedder so the pipeline runs without network.
-    from medha.embedding.local_embedder import LocalEmbedder
+def _dim_for_model(model: str) -> int:
+    """Return embedding dimension for a model name (strip vendor prefix first)."""
+    bare = model.split("/", 1)[1] if "/" in model else model
+    return PROVIDER_DIMENSIONS.get(bare) or PROVIDER_DIMENSIONS.get(model, 1536)
 
-    return LocalEmbedder(dimension=PROVIDER_DIMENSIONS.get(settings.embedding_provider, 384))
+
+def _check_fingerprint(settings: Settings) -> None:
+    """Warn if the embedding model changed since the index was last built."""
+    fp_path = os.path.join("data", "embedding_fingerprint")
+    current = settings.embedding_fingerprint()
+    try:
+        if os.path.exists(fp_path):
+            stored = open(fp_path).read().strip()  # noqa: WPS515
+            if stored and stored != current:
+                logger.warning(
+                    "embedding.model_changed — vector index may be stale; "
+                    "reindex required. previous=%s current=%s",
+                    stored,
+                    current,
+                )
+        else:
+            os.makedirs("data", exist_ok=True)
+            with open(fp_path, "w") as f:
+                f.write(current)
+    except OSError:
+        pass
+
+
+def pick_embedder(settings: Settings) -> Embedder:
+    """Return the configured Embedder.
+
+    Uses Bifrost when EMBEDDING_MODEL is set; falls back to the local
+    hashing embedder otherwise.
+    """
+    _check_fingerprint(settings)
+
+    if not settings.embedding_model:
+        from medha.embedding.local_embedder import LocalEmbedder
+        return LocalEmbedder(dimension=PROVIDER_DIMENSIONS["local"])
+
+    # Bifrost wraps OpenRouter: openrouter/<vendor>/<model>
+    model = settings.embedding_model
+    bifrost_model = model if model.startswith("openrouter/") else (
+        f"openrouter/{model}" if "/" in model else f"openrouter/openai/{model}"
+    )
+    from medha.embedding.openai_embedder import OpenAIEmbedder
+    return OpenAIEmbedder(
+        base_url=f"{settings.bifrost_url}/v1",
+        api_key=settings.bifrost_api_key,
+        model=bifrost_model,
+        _dimension=_dim_for_model(model),
+    )

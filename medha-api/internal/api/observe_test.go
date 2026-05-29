@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,17 +14,11 @@ import (
 	"github.com/udai-kiran/medha/internal/config"
 	"github.com/udai-kiran/medha/internal/dedup"
 	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 func mustOpenStore(t *testing.T) *state.Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "observe-test.db")
-	s, err := state.Open(context.Background(), state.Options{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return testutil.OpenStore(t)
 }
 
 type spyEnqueuer struct{ n atomic.Int64 }

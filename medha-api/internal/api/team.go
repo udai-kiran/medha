@@ -160,7 +160,7 @@ func (a TeamAPI) Audit(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := a.Store.DB.QueryContext(r.Context(),
 		`SELECT timestamp, actor, action, target_type, target_id, payload_json
-         FROM audit_log ORDER BY id DESC LIMIT ?`, limit)
+         FROM audit_log ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
@@ -193,7 +193,7 @@ func (a TeamAPI) logAudit(ctx context.Context, actor, action, targetType, target
 	pl, _ := json.Marshal(payload)
 	_, _ = a.Store.DB.ExecContext(ctx,
 		`INSERT INTO audit_log (timestamp, actor, action, target_type, target_id, payload_json)
-         VALUES (datetime('now'), ?, ?, ?, ?, ?)`,
-		actor, action, targetType, targetID, string(pl),
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+		time.Now().UTC().Format(time.RFC3339Nano), actor, action, targetType, targetID, string(pl),
 	)
 }

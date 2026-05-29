@@ -157,7 +157,7 @@ func (s *Store) AcquireLease(ctx context.Context, project, actionID, holderID st
 	blob, _ := json.Marshal(lease)
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO kv (scope, key, value_json, updated_at)
-        VALUES (?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT(scope, key) DO UPDATE SET
             value_json = excluded.value_json,
             updated_at = excluded.updated_at
@@ -294,6 +294,120 @@ func SignalID() string {
 		b[i] = byte(now >> (i * 8))
 	}
 	return fmt.Sprintf("sig-%012x", now&0xFFFFFFFFFFFF)
+}
+
+// CreateCheckpoint registers a condition gate (G20).
+func (s *Store) CreateCheckpoint(ctx context.Context, project, id, conditionExpr string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO checkpoints (id, project, condition_expr, created_at)
+         VALUES ($1, $2, $3, $4) ON CONFLICT(id) DO NOTHING`, id, project, conditionExpr, now)
+	return err
+}
+
+// SatisfyCheckpoint marks a checkpoint as satisfied.
+func (s *Store) SatisfyCheckpoint(ctx context.Context, id string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE checkpoints SET satisfied_at = $1 WHERE id = $2`, now, id)
+	return err
+}
+
+// CreateSentinel registers an event-driven watcher (G20).
+func (s *Store) CreateSentinel(ctx context.Context, project, id, eventPattern, handlerURL string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO sentinels (id, project, event_pattern, handler_url, created_at)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT(id) DO NOTHING`, id, project, eventPattern, handlerURL, now)
+	return err
+}
+
+// TriggerSentinel fires a sentinel by id (G20). Returns the handler URL.
+func (s *Store) TriggerSentinel(ctx context.Context, id string) (string, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var handlerURL string
+	err := s.DB.QueryRowContext(ctx,
+		`UPDATE sentinels SET triggered_at = $1 WHERE id = $2 RETURNING handler_url`, now, id,
+	).Scan(&handlerURL)
+	return handlerURL, err
+}
+
+// SketchRow is an ephemeral in-memory action graph (G21).
+// Stored in KV so it is session-scoped and not persisted long-term.
+type SketchRow struct {
+	ID      string         `json:"id"`
+	Project string         `json:"project"`
+	Actions []ActionRow    `json:"actions"`
+	Params  map[string]any `json:"params,omitempty"`
+}
+
+// CreateSketch stores an ephemeral sketch in KV.
+func (s *Store) CreateSketch(ctx context.Context, sketch *SketchRow) error {
+	if sketch.ID == "" {
+		return errors.New("CreateSketch: id required")
+	}
+	kv := NewKV(s)
+	return kv.Put(ctx, ScopeActions, Key(ScopeActions, sketch.Project, "sketch:"+sketch.ID), sketch)
+}
+
+// PromoteSketch converts a sketch to a permanent routine.
+func (s *Store) PromoteSketch(ctx context.Context, project, sketchID string) (*RoutineRow, error) {
+	kv := NewKV(s)
+	var sketch SketchRow
+	if err := kv.Get(ctx, ScopeActions, Key(ScopeActions, project, "sketch:"+sketchID), &sketch); err != nil {
+		return nil, err
+	}
+	steps := make([]string, 0, len(sketch.Actions))
+	for _, a := range sketch.Actions {
+		steps = append(steps, a.Title)
+	}
+	routine := &RoutineRow{
+		ID: newID("routine"), Project: project,
+		Name:        fmt.Sprintf("sketch-%s", sketchID),
+		Description: fmt.Sprintf("Promoted from sketch %s", sketchID),
+		Steps:       steps,
+	}
+	if err := s.PutRoutine(ctx, routine); err != nil {
+		return nil, err
+	}
+	_ = kv.Delete(ctx, ScopeActions, Key(ScopeActions, project, "sketch:"+sketchID))
+	return routine, nil
+}
+
+// Crystallize compacts a list of completed action IDs into a single summary action (G21).
+func (s *Store) Crystallize(ctx context.Context, project string, actionIDs []string) (*ActionRow, error) {
+	titles := make([]string, 0, len(actionIDs))
+	for _, id := range actionIDs {
+		a, err := s.GetAction(ctx, project, id)
+		if err == nil {
+			titles = append(titles, a.Title)
+		}
+	}
+	summary := &ActionRow{
+		ID:          newID("cryst"),
+		Project:     project,
+		Title:       fmt.Sprintf("Crystallized: %d actions", len(titles)),
+		Description: strings.Join(titles, "; "),
+		Status:      "completed",
+	}
+	if err := s.PutAction(ctx, summary); err != nil {
+		return nil, err
+	}
+	return summary, nil
+}
+
+// GetFrontier wraps Frontier for compatibility with new API surface (G16).
+func (s *Store) GetFrontier(ctx context.Context, project string) ([]*ActionRow, error) {
+	return s.Frontier(ctx, project)
+}
+
+// GetNextAction returns the single highest-priority unblocked action (G16).
+func (s *Store) GetNextAction(ctx context.Context, project string) (*ActionRow, error) {
+	actions, err := s.Frontier(ctx, project)
+	if err != nil || len(actions) == 0 {
+		return nil, err
+	}
+	return actions[0], nil
 }
 
 // ScrubLeases removes expired leases; called periodically by Task 24's

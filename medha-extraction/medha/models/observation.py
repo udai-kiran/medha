@@ -13,7 +13,7 @@ Modality = Literal["text", "image", "mixed"]
 class RawObservation(BaseModel):
     """A single agent observation before compression/extraction.
 
-    Mirrors `go/internal/models/observation.go` `RawObservation`.
+    Mirrors `medha-api/internal/models/observation.go` `RawObservation`.
     """
 
     id: str = Field(..., description="obs-... identifier")

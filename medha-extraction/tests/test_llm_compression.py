@@ -115,7 +115,7 @@ async def test_compressor_falls_back_when_no_client() -> None:
 
 @pytest.mark.asyncio()
 async def test_compressor_falls_back_when_client_raises() -> None:
-    settings = Settings(_env_file=None, ANTHROPIC_API_KEY="sk-test")  # type: ignore[call-arg]
+    settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
     client = _FakeClient("", raise_exc=RuntimeError("boom"))
     c = LLMCompressor(client=client, settings=settings)
     out = await c.compress(make_raw())
@@ -125,7 +125,7 @@ async def test_compressor_falls_back_when_client_raises() -> None:
 
 @pytest.mark.asyncio()
 async def test_compressor_falls_back_on_timeout() -> None:
-    settings = Settings(_env_file=None, ANTHROPIC_API_KEY="sk-test")  # type: ignore[call-arg]
+    settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
 
     class Slow(_FakeClient):
         async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:  # noqa: D401
@@ -140,7 +140,7 @@ async def test_compressor_falls_back_on_timeout() -> None:
 
 @pytest.mark.asyncio()
 async def test_compressor_uses_llm_when_available() -> None:
-    settings = Settings(_env_file=None, ANTHROPIC_API_KEY="sk-test")  # type: ignore[call-arg]
+    settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
     client = _FakeClient(_WELL_FORMED)
     c = LLMCompressor(client=client, settings=settings)
     out = await c.compress(make_raw())

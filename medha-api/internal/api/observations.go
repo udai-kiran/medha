@@ -9,9 +9,8 @@ import (
 	"github.com/udai-kiran/medha/internal/state"
 )
 
-// ObservationsAPI groups read-only handlers for /observations and
-// /observation/{id}. The write path is /observe (Task 8) which has different
-// validation / privacy concerns.
+// ObservationsAPI groups read-only handlers for /observations, /observation/{id},
+// and /file-history.
 type ObservationsAPI struct {
 	Store *state.Store
 }
@@ -20,6 +19,7 @@ type ObservationsAPI struct {
 func (a ObservationsAPI) Register(r chi.Router) {
 	r.Get("/observations", a.List)
 	r.Get("/observation/{id}", a.Get)
+	r.Get("/file-history", a.FileHistory)
 }
 
 // Get returns a single observation by id.
@@ -51,10 +51,10 @@ func (a ObservationsAPI) List(w http.ResponseWriter, r *http.Request) {
                COALESCE(type,''), COALESCE(title,''), modality, has_secrets, compressed,
                created_at
         FROM observations
-        WHERE (? = '' OR session_id = ?)
-        AND (? = '' OR project = ?)
-        ORDER BY created_at DESC LIMIT ?
-    `, session, session, project, project, limit)
+        WHERE ($1 = '' OR session_id = $1)
+        AND ($2 = '' OR project = $2)
+        ORDER BY created_at DESC LIMIT $3
+    `, session, project, limit)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "list_failed", err.Error())
 		return
@@ -65,7 +65,7 @@ func (a ObservationsAPI) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var (
 			id, sess, proj, hook, tool, typ, title, modality, created string
-			hasSecrets, compressed                                    int
+			hasSecrets, compressed                                     int
 		)
 		if err := rows.Scan(&id, &sess, &proj, &hook, &tool, &typ, &title, &modality, &hasSecrets, &compressed, &created); err != nil {
 			WriteError(w, http.StatusInternalServerError, "list_failed", err.Error())
@@ -82,4 +82,31 @@ func (a ObservationsAPI) List(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"observations": out})
+}
+
+// FileHistory returns the chronological list of compressed observations that
+// touched a given file path. Query params: project (optional), filePath (required), limit.
+func (a ObservationsAPI) FileHistory(w http.ResponseWriter, r *http.Request) {
+	project := r.URL.Query().Get("project")
+	filePath := r.URL.Query().Get("filePath")
+	if filePath == "" {
+		WriteError(w, http.StatusBadRequest, "missing_param", "filePath is required")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	entries, err := a.Store.FileHistory(r.Context(), project, filePath, limit)
+	if err != nil {
+		WriteError(w, http.StatusInternalServerError, "file_history_failed", err.Error())
+		return
+	}
+	out := make([]map[string]any, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, map[string]any{
+			"id": e.ID, "sessionId": e.SessionID, "project": e.Project,
+			"hookType": e.HookType, "toolName": e.ToolName,
+			"type": e.Type, "title": e.Title, "createdAt": e.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"filePath": filePath, "history": out})
 }

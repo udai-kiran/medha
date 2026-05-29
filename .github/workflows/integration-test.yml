@@ -3,8 +3,8 @@ name: Integration smoke
 on:
   pull_request:
     paths:
-      - "go/**"
-      - "py/**"
+      - "medha-api/**"
+      - "medha-extraction/**"
       - "docker-compose.yml"
       - "deploy/**"
       - ".github/workflows/integration-test.yml"

@@ -6,22 +6,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/udai-kiran/medha/internal/config"
 	"github.com/udai-kiran/medha/internal/dedup"
 	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 func newFullRouter(t *testing.T) (http.Handler, *state.Store) {
 	t.Helper()
-	store, err := state.Open(context.Background(), state.Options{Path: filepath.Join(t.TempDir(), "full.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
+	store := testutil.OpenStore(t)
 	deps := RouterDeps{
 		Observe: ObserveDeps{
 			Store:       store,
@@ -176,11 +172,7 @@ func TestObservationsAPI_GetAndList(t *testing.T) {
 }
 
 func TestInternalAPI_PostCompressedReindexes(t *testing.T) {
-	store, err := state.Open(context.Background(), state.Options{Path: filepath.Join(t.TempDir(), "ix.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
+	store := testutil.OpenStore(t)
 
 	ctx := context.Background()
 	_, _ = store.EnsureSession(ctx, "sess-1", "p", "")

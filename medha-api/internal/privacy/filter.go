@@ -36,16 +36,22 @@ func Filter(s string) (string, FilterResult) {
 	}
 
 	// 2. Redact known secret formats.
-	for _, p := range secretPatterns {
-		if loc := p.re.FindStringIndex(s); loc != nil {
-			res.HadSecrets = true
-			res.HitPatterns = append(res.HitPatterns, p.name)
-			s = p.re.ReplaceAllString(s, redactedToken)
+	// Fast path: pure string scans have no mutex overhead (unlike regexp under
+	// -race). Only enter the regex loop when a secret hint is detected.
+	if hasSecretHint(s) {
+		for _, p := range secretPatterns {
+			if loc := p.re.FindStringIndex(s); loc != nil {
+				res.HadSecrets = true
+				res.HitPatterns = append(res.HitPatterns, p.name)
+				s = p.re.ReplaceAllString(s, redactedToken)
+			}
 		}
 	}
 
-	// 3. Strip ANSI last.
-	s = StripANSI(s)
+	// 3. Strip ANSI last; skip when no escape byte is present.
+	if strings.ContainsRune(s, '\x1b') {
+		s = StripANSI(s)
+	}
 
 	return s, res
 }
@@ -58,4 +64,43 @@ func FilterBytes(b []byte) ([]byte, FilterResult) {
 		return b, res
 	}
 	return []byte(out), res
+}
+
+// hasSecretHint returns true when s contains a substring that could be part of
+// a secret matching one of the secretPatterns. It is intentionally conservative:
+// false positives (normal text that triggers the hint) are acceptable — they
+// just cause the regex loop to run unnecessarily. False negatives would silently
+// skip redaction, which is not allowed.
+//
+// Pure string operations are used deliberately: regexp operations acquire a
+// mutex internally, which is prohibitively expensive under -race for the common
+// (clean-input) case.
+func hasSecretHint(s string) bool {
+	// Case-sensitive prefixes that uniquely identify most secret formats.
+	if strings.Contains(s, "sk-") ||
+		strings.Contains(s, "AKIA") ||
+		strings.Contains(s, "AIza") ||
+		strings.Contains(s, "eyJ") ||
+		strings.Contains(s, "xox") ||
+		strings.Contains(s, "-----BEGIN") ||
+		strings.Contains(s, "ghp_") ||
+		strings.Contains(s, "gho_") ||
+		strings.Contains(s, "ghu_") ||
+		strings.Contains(s, "ghs_") ||
+		strings.Contains(s, "ghr_") {
+		return true
+	}
+	// Case-insensitive keyword checks (generic_key_value, bearer_header, aws).
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "password") ||
+		strings.Contains(lower, "passwd") ||
+		strings.Contains(lower, "pwd") ||
+		strings.Contains(lower, "token") ||
+		strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "bearer") ||
+		strings.Contains(lower, "api_key") ||
+		strings.Contains(lower, "api-key") ||
+		strings.Contains(lower, "apikey") ||
+		strings.Contains(lower, "authorization") ||
+		strings.Contains(lower, "aws_secret")
 }

@@ -105,7 +105,7 @@ async def test_summarizer_falls_back_on_error() -> None:
         async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:
             raise RuntimeError("nope")
 
-    settings = Settings(_env_file=None, ANTHROPIC_API_KEY="sk-test")  # type: ignore[call-arg]
+    settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
     s = SessionSummarizer(client=Boom(), settings=settings)
     out = await s.summarize("sess-1", _digests())
     # Synthetic path returned ⇒ deterministic title not "<unfilled>".
@@ -130,7 +130,7 @@ async def test_summarizer_parses_llm_response() -> None:
                 "</summary>"
             )
 
-    settings = Settings(_env_file=None, ANTHROPIC_API_KEY="sk-test")  # type: ignore[call-arg]
+    settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
     s = SessionSummarizer(client=Good(), settings=settings)
     out = await s.summarize("sess-1", _digests())
     assert out.title == "Implement JWT"

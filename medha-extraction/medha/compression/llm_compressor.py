@@ -24,19 +24,11 @@ from typing import Protocol
 
 from medha.compression.synthetic_compressor import synthetic_compress
 from medha.config import Settings
+from medha.llm.client import LLMClient  # noqa: F401 — re-exported for back-compat
 from medha.models import CompressedObservation, RawObservation
 from medha.utils.validators import clip
 
 logger = logging.getLogger(__name__)
-
-
-class LLMClient(Protocol):
-    """Narrow surface that any provider client (Anthropic, OpenAI, …) must satisfy."""
-
-    async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str: ...
-
-    @property
-    def name(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -197,7 +189,7 @@ class LLMCompressor:
 
     async def compress(self, raw: RawObservation) -> CompressedObservation:
         """Compress with LLM if available, falling back to synthetic on any failure."""
-        if self.client is None or not self.settings.has_any_llm():
+        if self.client is None:
             return synthetic_compress(raw)
 
         system, user = build_prompt(raw)

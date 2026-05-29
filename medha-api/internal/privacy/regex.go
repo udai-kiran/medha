@@ -8,6 +8,7 @@ package privacy
 
 import "regexp"
 
+
 // redactedToken is the placeholder we substitute for any matched secret.
 // Kept short and obvious so a human auditing the DB can spot leaks fast.
 const redactedToken = "***REDACTED***"

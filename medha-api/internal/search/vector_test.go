@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"math"
-	"path/filepath"
 	"testing"
 
 	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 // fakeEmbedder is a deterministic in-process embedder that mirrors the Python
@@ -73,14 +73,7 @@ func isAlnum(b byte) bool {
 }
 
 func openVectorStore(t *testing.T) *state.Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "vec-test.db")
-	s, err := state.Open(context.Background(), state.Options{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return testutil.OpenStore(t)
 }
 
 func TestVectorIndex_Roundtrip(t *testing.T) {
@@ -132,27 +125,18 @@ func TestVectorIndex_Roundtrip(t *testing.T) {
 }
 
 func TestVectorIndex_PersistsAcrossReopen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "vec-persist.db")
 	ctx := context.Background()
 
-	s1, err := state.Open(ctx, state.Options{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
+	s1 := testutil.OpenStore(t)
 	v1, _ := NewVectorIndex(ctx, s1, &fakeEmbedder{dim: 32})
 	_ = v1.Index(ctx, "a", "p", "hello world")
 	_ = v1.Index(ctx, "b", "p", "another doc")
-	_ = s1.Close()
 
-	s2, err := state.Open(ctx, state.Options{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = s2.Close() }()
-	v2, _ := NewVectorIndex(ctx, s2, &fakeEmbedder{dim: 32})
+	// Use the same store (PostgreSQL persists across connection re-opens).
+	v2, _ := NewVectorIndex(ctx, s1, &fakeEmbedder{dim: 32})
 	n, dim := v2.Stats()
 	if n != 2 || dim != 32 {
-		t.Errorf("after reopen: docs=%d dim=%d, want 2/32", n, dim)
+		t.Errorf("after reload: docs=%d dim=%d, want 2/32", n, dim)
 	}
 }
 

@@ -55,7 +55,7 @@ const (
 	ScopeHealthChecks      Scope = "health_checks"
 )
 
-// KV is a typed key/value layer over the `kv` SQLite table. Values are stored
+// KV is a typed key/value layer over the `kv` PostgreSQL table. Values are stored
 // as JSON; callers pass any JSON-serialisable Go value.
 type KV struct {
 	db *sql.DB

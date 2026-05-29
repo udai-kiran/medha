@@ -5,22 +5,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 func openConsolStore(t *testing.T) *state.Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "consol.db")
-	s, err := state.Open(context.Background(), state.Options{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return testutil.OpenStore(t)
 }
 
 func insertCompressed(t *testing.T, s *state.Store, id, sess string, narrative string, files []string, concepts []string) {

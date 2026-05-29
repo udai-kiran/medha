@@ -2,21 +2,14 @@ package search
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 func openGraphStore(t *testing.T) *state.Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "graph-test.db")
-	s, err := state.Open(context.Background(), state.Options{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return testutil.OpenStore(t)
 }
 
 func TestGraph_UpsertAndMatch(t *testing.T) {

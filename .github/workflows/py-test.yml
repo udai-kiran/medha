@@ -3,12 +3,12 @@ name: Python tests
 on:
   pull_request:
     paths:
-      - "py/**"
+      - "medha-extraction/**"
       - ".github/workflows/py-test.yml"
   push:
     branches: [main, master]
     paths:
-      - "py/**"
+      - "medha-extraction/**"
       - ".github/workflows/py-test.yml"
 
 concurrency:
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./py
+        working-directory: ./medha-extraction
     steps:
       - uses: actions/checkout@v4
 
@@ -41,11 +41,11 @@ jobs:
         run: uv run ruff check .
 
       - name: Mypy
-        run: uv run mypy agent_mem
+        run: uv run mypy medha
 
       - name: Pytest with coverage
         run: |
-          uv run pytest --cov=agent_mem --cov-report=xml --cov-report=term tests/
+          uv run pytest --cov=medha --cov-report=xml --cov-report=term tests/
           # Warn below 70% during M0; tighten in Task 34.
           PCT=$(uv run python -c "import xml.etree.ElementTree as E; t=E.parse('coverage.xml').getroot(); print(int(float(t.attrib['line-rate'])*100))")
           echo "Coverage: ${PCT}%"
@@ -55,4 +55,4 @@ jobs:
         if: always()
         with:
           name: py-coverage
-          path: py/coverage.xml
+          path: medha-extraction/coverage.xml

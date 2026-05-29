@@ -22,15 +22,16 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, g
 
 from pydantic import BaseModel, Field
 
-from agent_mem import __version__
-from medha.compression import SyntheticCompressor, validate_compressed
+from medha import __version__
+from medha.compression import LLMCompressor, LLMCompressorConfig, SyntheticCompressor, validate_compressed
 from medha.config import Settings, get_settings
 from medha.embedding import pick_embedder
 from medha.enrichment import EnrichmentCache, Enricher, WikipediaEnricher
 from medha.extraction import default_pipeline, extract_relationships
+from medha.llm import build_llm_client
 from medha.models import CompressedObservation, Entity, RawObservation, Relationship
 from medha.summarization import ObservationDigest, synthetic_session_summary
-from medha.summarization.session import SessionSummary
+from medha.summarization.session import SessionSummary, SessionSummarizer, SessionSummarizerConfig
 from medha.utils.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -48,24 +49,39 @@ requests_total = Counter(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> Any:
-    """Wire settings + logging at startup; warmup heavy models in later tasks."""
+    """Wire settings, LLM clients, and logging at startup."""
     settings = get_settings()
     configure_logging(settings.log_level)
     app.state.settings = settings
-    logger.info(
-        "py.startup",
-        extra={
-            "version": __version__,
-            "embedding_provider": settings.embedding_provider,
-            "has_any_llm": settings.has_any_llm(),
-        },
+
+    # Build per-stage LLM clients (None → synthetic fallback, no crash).
+    compress_client = build_llm_client(settings.resolve_stage_model("compress"), settings)
+    summarize_client = build_llm_client(settings.resolve_stage_model("summarize"), settings)
+
+    app.state.compressor = LLMCompressor(
+        client=compress_client,
+        settings=settings,
+        config=LLMCompressorConfig(),
     )
+    app.state.summarizer = SessionSummarizer(
+        client=summarize_client,
+        settings=settings,
+        config=SessionSummarizerConfig(),
+    )
+
+    stage_map = {
+        "compress": compress_client.name if compress_client else "synthetic",
+        "summarize": summarize_client.name if summarize_client else "synthetic",
+        "extract": settings.resolve_stage_model("extract") or "heuristic",
+        "embed": f"bifrost:{settings.embedding_fingerprint()}" if settings.embedding_model else "local",
+    }
+    logger.info("py.startup", extra={"version": __version__, "stages": stage_map})
     yield
     logger.info("py.shutdown")
 
 
 app = FastAPI(
-    title="agent_mem (Python)",
+    title="medha (Python)",
     version=__version__,
     description="Extraction, compression, summarization, embeddings, enrichment.",
     lifespan=lifespan,
@@ -74,20 +90,20 @@ app = FastAPI(
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Liveness probe — always returns 200 unless the process is dying.
-
-    `up_to_date` will reflect model staleness once Task 19 loads spaCy/GLiNER.
-    `model_version` is a placeholder until those models are pinned.
-    """
+    """Liveness probe — always returns 200 unless the process is dying."""
     settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
+    compressor: LLMCompressor | None = getattr(app.state, "compressor", None)
+    summarizer: SessionSummarizer | None = getattr(app.state, "summarizer", None)
     requests_total.labels(route="/health", status="200").inc()
     return {
         "status": "ok",
         "version": __version__,
-        "up_to_date": True,
-        "model_version": "skeleton",
-        "embedding_provider": settings.embedding_provider,
-        "llm_configured": settings.has_any_llm(),
+        "stages": {
+            "compress": compressor.name if compressor else "synthetic",
+            "summarize": summarizer.name if summarizer else "synthetic",
+            "extract": settings.resolve_stage_model("extract") or "heuristic",
+            "embed": f"bifrost:{settings.embedding_fingerprint()}" if settings.embedding_model else "local",
+        },
     }
 
 
@@ -196,11 +212,7 @@ class SummarizeRequest(BaseModel):
 
 @app.post("/summarize", response_model=SessionSummary)
 async def summarize(req: SummarizeRequest) -> SessionSummary:
-    """Summarise a session from its observation digests.
-
-    Synthetic-only here; Task 22's worker may wrap this with the LLM
-    SessionSummarizer when a provider key is configured.
-    """
+    """Summarise a session from its observation digests via LLM (or synthetic fallback)."""
     digests = [
         ObservationDigest(
             title=o.title,
@@ -211,8 +223,12 @@ async def summarize(req: SummarizeRequest) -> SessionSummary:
         )
         for o in req.observations
     ]
+    summarizer: SessionSummarizer = getattr(app.state, "summarizer", None) or SessionSummarizer(
+        client=None,
+        settings=app.state.settings if hasattr(app.state, "settings") else get_settings(),
+    )
     requests_total.labels(route="/summarize", status="200").inc()
-    return synthetic_session_summary(req.session_id, digests)
+    return await summarizer.summarize(req.session_id, digests)
 
 
 class EnrichRequest(BaseModel):
@@ -262,17 +278,53 @@ async def enrich(req: EnrichRequest) -> EnrichResponse:
 
 @app.post("/compress", response_model=CompressedObservation)
 async def compress(raw: RawObservation) -> CompressedObservation:
-    """Compress a single RawObservation.
-
-    M1 ships only the synthetic path. The LLM path lands in Task 13 with this
-    one as the fallback when LLMs time out or no API key is configured.
-    """
-    settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
-    # Future: when settings.auto_compress is true AND an LLM is configured,
-    # route to the LLM compressor here. Until Task 13 the synthetic path is
-    # the only path, regardless of the flag.
-    _ = settings
-    result = _synthetic(raw)
+    """Compress a single RawObservation via LLM (or synthetic fallback)."""
+    compressor: LLMCompressor = getattr(app.state, "compressor", None) or LLMCompressor(
+        client=None,
+        settings=app.state.settings if hasattr(app.state, "settings") else get_settings(),
+    )
+    result = await compressor.compress(raw)
     requests_total.labels(route="/compress", status="200").inc()
     return validate_compressed(result)
+
+
+class TitleRequest(BaseModel):
+    content: str = Field(..., description="Memory content to generate a title for")
+
+
+class TitleResponse(BaseModel):
+    title: str
+    generated: bool = Field(description="True if LLM was used, False if fallback")
+
+
+@app.post("/title", response_model=TitleResponse)
+async def generate_title(req: TitleRequest) -> TitleResponse:
+    """Generate a short title for memory content via LLM, with word-truncation fallback."""
+    settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
+    client = build_llm_client(settings.resolve_stage_model("compress"), settings)
+    if client is not None:
+        try:
+            prompt = (
+                "Generate a short, descriptive title (5–8 words) for the following memory. "
+                "Return only the title text, no punctuation at the end, no quotes.\n\n"
+                f"{req.content[:800]}"
+            )
+            import asyncio
+            response = await asyncio.wait_for(
+                client.complete(system="You are a concise title generator.", user=prompt),
+                timeout=15.0,
+            )
+            title = response.strip().strip('"').strip("'")
+            if title:
+                requests_total.labels(route="/title", status="200").inc()
+                return TitleResponse(title=title[:80], generated=True)
+        except Exception:
+            pass
+    # Fallback: first 8 words
+    words = req.content.split()[:8]
+    title = " ".join(words)
+    if len(title) > 60:
+        title = title[:57] + "..."
+    requests_total.labels(route="/title", status="200").inc()
+    return TitleResponse(title=title, generated=False)
 

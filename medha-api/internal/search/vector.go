@@ -79,7 +79,7 @@ func (p *PythonEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 }
 
 // VectorIndex stores float32 embeddings keyed by doc id and answers cosine-
-// similarity queries. Persistence is via a small SQLite table; the hot path
+// similarity queries. Persistence is via a small table; the hot path
 // loads vectors into memory on first use so similarity is a tight loop.
 //
 // Dimension is locked at first Index call to prevent mixed-dim corpora; a
@@ -88,10 +88,10 @@ type VectorIndex struct {
 	store    *state.Store
 	embedder Embedder
 
-	mu         sync.RWMutex
-	dim        int
-	vectors    map[string][]float32 // docID → vector
-	projectOf  map[string]string
+	mu        sync.RWMutex
+	dim       int
+	vectors   map[string][]float32 // docID → vector
+	projectOf map[string]string
 }
 
 // NewVectorIndex applies the schema migration and warms in-memory state.
@@ -117,7 +117,7 @@ func ensureVectorSchema(ctx context.Context, db *sql.DB) error {
             doc_id     TEXT PRIMARY KEY,
             project    TEXT NOT NULL DEFAULT '',
             dim        INTEGER NOT NULL,
-            vector     BLOB NOT NULL,
+            vector     BYTEA NOT NULL,
             indexed_at TEXT NOT NULL
         )`,
 		`CREATE INDEX IF NOT EXISTS idx_vector_docs_project ON vector_docs(project)`,
@@ -194,7 +194,7 @@ func (v *VectorIndex) Index(ctx context.Context, docID, project, text string) er
 	}
 	_, err = v.store.DB.ExecContext(ctx, `
         INSERT INTO vector_docs (doc_id, project, dim, vector, indexed_at)
-        VALUES (?, ?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT(doc_id) DO UPDATE SET
             project    = excluded.project,
             dim        = excluded.dim,
@@ -210,7 +210,7 @@ func (v *VectorIndex) Delete(ctx context.Context, docID string) error {
 	delete(v.vectors, docID)
 	delete(v.projectOf, docID)
 	v.mu.Unlock()
-	_, err := v.store.DB.ExecContext(ctx, `DELETE FROM vector_docs WHERE doc_id = ?`, docID)
+	_, err := v.store.DB.ExecContext(ctx, `DELETE FROM vector_docs WHERE doc_id = $1`, docID)
 	return err
 }
 

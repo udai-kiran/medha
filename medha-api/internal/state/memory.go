@@ -67,7 +67,7 @@ func (s *Store) InsertMemory(ctx context.Context, m *MemoryRow) error {
             id, project, type, tier, title, content,
             concepts_json, files_json, session_ids_json, source_observation_ids,
             strength, is_latest, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, $12, $13)
     `, m.ID, m.Project, m.Type, m.Tier, m.Title, m.Content,
 		string(concepts), string(files), string(sessions), string(sources),
 		m.Strength, m.CreatedAt.Format(time.RFC3339Nano), m.UpdatedAt.Format(time.RFC3339Nano))
@@ -80,7 +80,7 @@ func (s *Store) GetMemory(ctx context.Context, id string) (*MemoryRow, error) {
         SELECT id, project, type, tier, title, content,
                concepts_json, files_json, session_ids_json, source_observation_ids,
                strength, is_latest, created_at, updated_at, last_retrieved_at
-        FROM memories WHERE id = ?
+        FROM memories WHERE id = $1
     `, id)
 	return scanMemory(row.Scan)
 }
@@ -95,10 +95,10 @@ func (s *Store) ListMemoriesByTier(ctx context.Context, project, tier string, li
                  concepts_json, files_json, session_ids_json, source_observation_ids,
                  strength, is_latest, created_at, updated_at, last_retrieved_at
           FROM memories
-          WHERE (? = '' OR project = ?)
-          AND (? = '' OR tier = ?)
+          WHERE ($1 = '' OR project = $2)
+          AND ($3 = '' OR tier = $4)
           ORDER BY strength DESC, created_at DESC
-          LIMIT ?`
+          LIMIT $5`
 	rows, err := s.DB.QueryContext(ctx, q, project, project, tier, tier, limit)
 	if err != nil {
 		return nil, err
@@ -154,13 +154,14 @@ func (s *Store) MarkRetrieved(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
 	args := make([]any, 0, len(ids)+1)
 	args = append(args, time.Now().UTC().Format(time.RFC3339Nano))
-	for _, id := range ids {
+	placeholders := make([]string, len(ids))
+	for i, id := range ids {
 		args = append(args, id)
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
 	}
-	q := fmt.Sprintf(`UPDATE memories SET last_retrieved_at = $1 WHERE id IN (%s)`, placeholders)
+	q := fmt.Sprintf(`UPDATE memories SET last_retrieved_at = $1 WHERE id IN (%s)`, strings.Join(placeholders, ","))
 	_, err := s.DB.ExecContext(ctx, q, args...)
 	return err
 }
@@ -177,6 +178,83 @@ func (s *Store) UpdateMemoryStrength(ctx context.Context, id string, strength fl
 func (s *Store) DeleteMemory(ctx context.Context, id string) error {
 	_, err := s.DB.ExecContext(ctx, `DELETE FROM memories WHERE id = $1`, id)
 	return err
+}
+
+// SearchMemoriesByText does a fast case-insensitive full-text scan against
+// title and content. Used for dedup checks before inserting new memories.
+// Returns at most limit results ordered by strength desc.
+func (s *Store) SearchMemoriesByText(ctx context.Context, project, query string, limit int) ([]*MemoryRow, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	pattern := "%" + strings.ToLower(query) + "%"
+	q := `SELECT id, project, type, tier, title, content,
+               concepts_json, files_json, session_ids_json, source_observation_ids,
+               strength, is_latest, created_at, updated_at, last_retrieved_at
+          FROM memories
+          WHERE ($1 = '' OR project = $2)
+          AND (LOWER(title) LIKE $3 OR LOWER(content) LIKE $3)
+          ORDER BY strength DESC
+          LIMIT $4`
+	rows, err := s.DB.QueryContext(ctx, q, project, project, pattern, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*MemoryRow
+	for rows.Next() {
+		m, err := scanMemory(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// FileHistoryEntry is a single observation row for the file-history endpoint.
+type FileHistoryEntry struct {
+	ID        string
+	SessionID string
+	Project   string
+	HookType  string
+	ToolName  string
+	Type      string
+	Title     string
+	CreatedAt string
+}
+
+// FileHistory returns observations that reference filePath in their files_json
+// array, ordered chronologically. Uses the GIN index added in migration 2.
+func (s *Store) FileHistory(ctx context.Context, project, filePath string, limit int) ([]*FileHistoryEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Build a JSON array containing just the target file path for containment check.
+	needle := `["` + filePath + `"]`
+	q := `SELECT id, session_id, COALESCE(project,''), hook_type,
+               COALESCE(tool_name,''), COALESCE(type,''), COALESCE(title,''), created_at
+          FROM observations
+          WHERE compressed = 1
+          AND ($1 = '' OR project = $2)
+          AND files_json::jsonb @> $3::jsonb
+          ORDER BY created_at ASC
+          LIMIT $4`
+	rows, err := s.DB.QueryContext(ctx, q, project, project, needle, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*FileHistoryEntry
+	for rows.Next() {
+		e := &FileHistoryEntry{}
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Project, &e.HookType,
+			&e.ToolName, &e.Type, &e.Title, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 // EvictExpiredObservations enforces tier TTLs on the observations table:
@@ -200,7 +278,7 @@ func (s *Store) EvictExpiredObservations(ctx context.Context, workingTTL, episod
 
 	res, err = s.DB.ExecContext(ctx, `
         DELETE FROM observations
-        WHERE compressed = 1 AND created_at < ?
+        WHERE compressed = 1 AND created_at < $1
         AND session_id IN (SELECT id FROM sessions WHERE status != 'completed')
     `, episodicCutoff)
 	if err != nil {

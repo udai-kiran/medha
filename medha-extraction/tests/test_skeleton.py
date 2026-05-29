@@ -16,8 +16,8 @@ def test_health_ok(client: TestClient) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["model_version"] == "skeleton"
-    assert "embedding_provider" in body
+    assert "stages" in body
+    assert set(body["stages"].keys()) == {"compress", "summarize", "extract", "embed"}
 
 
 def test_metrics_exposition(client: TestClient) -> None:
@@ -29,13 +29,11 @@ def test_metrics_exposition(client: TestClient) -> None:
     assert "agent_mem_py_requests_total" in r.text
 
 
-def test_settings_no_llm_required() -> None:
-    """Missing optional keys must not raise — NFR-9 degraded mode."""
+def test_settings_bifrost_required() -> None:
+    """BIFROST_URL must be set — service will not start without it."""
     s = get_settings()
     assert s.port == 5000
-    assert s.embedding_provider == "local"
-    # has_any_llm just reports state, doesn't fail.
-    assert isinstance(s.has_any_llm(), bool)
+    assert s.bifrost_url  # set in .env / test environment
 
 
 def test_validators() -> None:

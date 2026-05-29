@@ -34,22 +34,29 @@ type Edge struct {
 	SourceObservationID string
 }
 
-// GraphIndex is the SQLite-backed knowledge graph. It implements SearchEngine
+// GraphIndex is the PostgreSQL-backed knowledge graph. It implements SearchEngine
 // — query → entity match → BFS-2 → observations that referenced any reachable
-// entity. Neo4j enrichment (Task 27) layers on top via a separate store.
+// entity. Neo4j enrichment layers on top via a separate store.
 type GraphIndex struct {
 	store *state.Store
-	// BFS depth is configurable; default = 2 (per agent_mem.md §"Phase 2"
-	// stage 3).
+	// BFS depth is configurable; default = 2.
 	MaxDepth int
 	// MinConfidence filters edges below this threshold during traversal.
 	MinConfidence float64
 }
 
-// NewGraphIndex returns a GraphIndex over an open Store. The core schema
-// already provides the graph tables (Task 6); nothing extra to create here.
+// NewGraphIndex returns a GraphIndex over an open Store.
 func NewGraphIndex(s *state.Store) *GraphIndex {
 	return &GraphIndex{store: s, MaxDepth: 2, MinConfidence: 0.3}
+}
+
+// pgPlaceholders returns "$start, $start+1, ..." for n items.
+func pgPlaceholders(start, n int) string {
+	parts := make([]string, n)
+	for i := range parts {
+		parts[i] = fmt.Sprintf("$%d", start+i)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // UpsertEntity inserts or updates an entity by (project, name, type) tuple.
@@ -61,12 +68,11 @@ func (g *GraphIndex) UpsertEntity(ctx context.Context, project, name, typ, subty
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	id := newEntityID()
 
-	// Try insert; on conflict, refresh confidence to max(existing, new).
 	res, err := g.store.DB.ExecContext(ctx, `
         INSERT INTO graph_entities (id, project, name, type, subtype, confidence, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT(project, name, type) DO UPDATE SET
-            confidence = MAX(graph_entities.confidence, excluded.confidence),
+            confidence = GREATEST(graph_entities.confidence, excluded.confidence),
             subtype    = COALESCE(NULLIF(excluded.subtype, ''), graph_entities.subtype),
             updated_at = excluded.updated_at
     `, id, project, name, typ, subtype, confidence, now, now)
@@ -76,7 +82,7 @@ func (g *GraphIndex) UpsertEntity(ctx context.Context, project, name, typ, subty
 	_ = res
 
 	row := g.store.DB.QueryRowContext(ctx,
-		`SELECT id, name, type, subtype, confidence FROM graph_entities WHERE project = ? AND name = ? AND type = ?`,
+		`SELECT id, name, type, subtype, confidence FROM graph_entities WHERE project = $1 AND name = $2 AND type = $3`,
 		project, name, typ,
 	)
 	out := &Entity{}
@@ -88,10 +94,7 @@ func (g *GraphIndex) UpsertEntity(ctx context.Context, project, name, typ, subty
 	return out, nil
 }
 
-// AddEdge persists a typed relationship between two entities. Edges with the
-// same (source, target, type, source_observation) tuple deduplicate naturally
-// because each gets a fresh id; for cleanliness we use ON CONFLICT on the
-// composite when the caller supplies a deterministic id.
+// AddEdge persists a typed relationship between two entities.
 func (g *GraphIndex) AddEdge(ctx context.Context, project string, e Edge) error {
 	if e.SourceID == "" || e.TargetID == "" || e.Type == "" {
 		return errors.New("AddEdge: source_id, target_id, type required")
@@ -101,49 +104,42 @@ func (g *GraphIndex) AddEdge(ctx context.Context, project string, e Edge) error 
 	}
 	_, err := g.store.DB.ExecContext(ctx, `
         INSERT INTO graph_edges (id, project, source_id, target_id, type, confidence, source_observation_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `, e.ID, project, e.SourceID, e.TargetID, e.Type, e.Confidence, e.SourceObservationID,
 		time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
 
 // LinkObservationToEntity records that an observation referenced an entity.
-// Uses the audit_log table's flexibility — no separate table needed for this
-// many-to-many. (A dedicated table can come later if read patterns demand it.)
 func (g *GraphIndex) LinkObservationToEntity(ctx context.Context, observationID, entityID string) error {
 	_, err := g.store.DB.ExecContext(ctx, `
         INSERT INTO audit_log (timestamp, actor, action, target_type, target_id, payload_json)
-        VALUES (?, 'system', 'link', 'entity', ?, ?)
+        VALUES ($1, 'system', 'link', 'entity', $2, $3)
     `, time.Now().UTC().Format(time.RFC3339Nano), entityID,
 		fmt.Sprintf(`{"observation_id":%q}`, observationID))
 	return err
 }
 
 // MatchEntities returns entities whose name fuzzily matches a query term.
-// Simple LIKE-based match keeps the implementation dependency-free; a real
-// fuzzy matcher (rapidfuzz / tf-idf) belongs in the Python service.
 func (g *GraphIndex) MatchEntities(ctx context.Context, project, query string) ([]Entity, error) {
 	tokens := Tokenize(query)
 	if len(tokens) == 0 {
 		return nil, nil
 	}
+	// $1, $2 = project (for the project filter); $3+ = LIKE patterns
+	args := []any{project, project}
 	conds := make([]string, 0, len(tokens))
-	args := []any{project}
-	for _, t := range tokens {
-		conds = append(conds, "LOWER(name) LIKE ?")
+	for i, t := range tokens {
+		conds = append(conds, fmt.Sprintf("LOWER(name) LIKE $%d", i+3))
 		args = append(args, "%"+strings.ToLower(t)+"%")
 	}
 	q := `SELECT id, name, type, COALESCE(subtype, ''), confidence
           FROM graph_entities
-          WHERE (? = '' OR project = ?)
+          WHERE ($1 = '' OR project = $2)
           AND (` + strings.Join(conds, " OR ") + `)
           ORDER BY confidence DESC LIMIT 32`
-	// Re-prepend the project arg because we built args starting with [project].
-	finalArgs := make([]any, 0, len(args)+1)
-	finalArgs = append(finalArgs, project)
-	finalArgs = append(finalArgs, args...)
 
-	rows, err := g.store.DB.QueryContext(ctx, q, finalArgs...)
+	rows, err := g.store.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -161,9 +157,7 @@ func (g *GraphIndex) MatchEntities(ctx context.Context, project, query string) (
 }
 
 // BFSTraverse returns the set of entity ids reachable from ``seeds`` within
-// MaxDepth hops, following both incoming and outgoing edges. One SQL query
-// per hop keeps the implementation straightforward and the depth is small
-// (default 2) — well within SQLite's reach.
+// MaxDepth hops, following both incoming and outgoing edges.
 func (g *GraphIndex) BFSTraverse(ctx context.Context, project string, seeds []string) (map[string]int, error) {
 	visited := make(map[string]int, len(seeds))
 	for _, id := range seeds {
@@ -172,9 +166,21 @@ func (g *GraphIndex) BFSTraverse(ctx context.Context, project string, seeds []st
 	frontier := append([]string(nil), seeds...)
 
 	for depth := 1; depth <= g.MaxDepth && len(frontier) > 0; depth++ {
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(frontier)), ",")
-		args := make([]any, 0, len(frontier)*2+3)
-		args = append(args, project)
+		n := len(frontier)
+		// $1, $2 = project; $3..$n+2 = source IDs; $n+3..$2n+2 = target IDs; $2n+3 = minConfidence
+		srcPlaceholders := pgPlaceholders(3, n)
+		tgtPlaceholders := pgPlaceholders(3+n, n)
+		confidenceParam := fmt.Sprintf("$%d", 3+2*n)
+
+		q := fmt.Sprintf(`
+            SELECT source_id, target_id FROM graph_edges
+            WHERE ($1 = '' OR project = $2)
+            AND (source_id IN (%s) OR target_id IN (%s))
+            AND confidence >= %s
+        `, srcPlaceholders, tgtPlaceholders, confidenceParam)
+
+		args := make([]any, 0, 2*n+3)
+		args = append(args, project, project)
 		for _, id := range frontier {
 			args = append(args, id)
 		}
@@ -182,16 +188,8 @@ func (g *GraphIndex) BFSTraverse(ctx context.Context, project string, seeds []st
 			args = append(args, id)
 		}
 		args = append(args, g.MinConfidence)
-		q := fmt.Sprintf(`
-            SELECT source_id, target_id FROM graph_edges
-            WHERE (? = '' OR project = ?)
-            AND (source_id IN (%s) OR target_id IN (%s))
-            AND confidence >= ?
-        `, placeholders, placeholders)
-		// The ? = '' OR project = ? expects two project args.
-		finalArgs := append([]any{project, project}, args[1:]...)
 
-		rows, err := g.store.DB.QueryContext(ctx, q, finalArgs...)
+		rows, err := g.store.DB.QueryContext(ctx, q, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -202,12 +200,12 @@ func (g *GraphIndex) BFSTraverse(ctx context.Context, project string, seeds []st
 				_ = rows.Close()
 				return nil, err
 			}
-			for _, n := range []string{src, tgt} {
-				if _, ok := visited[n]; ok {
+			for _, nd := range []string{src, tgt} {
+				if _, ok := visited[nd]; ok {
 					continue
 				}
-				visited[n] = depth
-				next = append(next, n)
+				visited[nd] = depth
+				next = append(next, nd)
 			}
 		}
 		_ = rows.Close()
@@ -239,16 +237,15 @@ func (g *GraphIndex) Search(ctx context.Context, project, query string, limit in
 	if err != nil {
 		return nil, err
 	}
-
-	// Map entity ids → observations via the audit-log linking convention.
 	if len(visited) == 0 {
 		return nil, nil
 	}
+
 	entIDs := make([]string, 0, len(visited))
 	for id := range visited {
 		entIDs = append(entIDs, id)
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(entIDs)), ",")
+	placeholders := pgPlaceholders(1, len(entIDs))
 	args := make([]any, 0, len(entIDs))
 	for _, id := range entIDs {
 		args = append(args, id)
@@ -263,7 +260,6 @@ func (g *GraphIndex) Search(ctx context.Context, project, query string, limit in
 	}
 	defer func() { _ = rows.Close() }()
 
-	// score = (entity confidence) / (1 + BFS depth) so closer-and-confident wins.
 	scores := make(map[string]float64)
 	for rows.Next() {
 		var entityID, payload string
@@ -297,8 +293,7 @@ func (g *GraphIndex) Search(ctx context.Context, project, query string, limit in
 }
 
 // extractObservationID pulls `"observation_id":"obs-..."` out of a JSON blob
-// without a full parse. Keeps the BFS path cheap; the audit payload shape is
-// our own so a regex/index probe is safe.
+// without a full parse.
 func extractObservationID(payload string) string {
 	const key = `"observation_id":"`
 	i := strings.Index(payload, key)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +14,7 @@ import (
 	"github.com/udai-kiran/medha/internal/consolidation"
 	"github.com/udai-kiran/medha/internal/dedup"
 	"github.com/udai-kiran/medha/internal/search"
-	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 // TestE2E_CaptureCompressSearchConsolidate walks the entire happy path:
@@ -27,13 +26,7 @@ import (
 // Python is faked via a httptest server so this test runs in CI without
 // network dependencies.
 func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
-	store, err := state.Open(context.Background(), state.Options{
-		Path: filepath.Join(t.TempDir(), "e2e.db"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = store.Close() }()
+	store := testutil.OpenStore(t)
 
 	bm25, err := search.NewBM25(context.Background(), store)
 	if err != nil {

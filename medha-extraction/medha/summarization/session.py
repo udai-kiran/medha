@@ -243,7 +243,7 @@ class SessionSummarizer:
     async def summarize(
         self, session_id: str, digests: list[ObservationDigest]
     ) -> SessionSummary:
-        if self.client is None or not self.settings.has_any_llm():
+        if self.client is None:
             return synthetic_session_summary(session_id, digests)
         try:
             text = await asyncio.wait_for(

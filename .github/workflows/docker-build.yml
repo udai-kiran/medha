@@ -3,8 +3,8 @@ name: Docker images
 on:
   pull_request:
     paths:
-      - "go/Dockerfile"
-      - "py/Dockerfile"
+      - "medha-api/Dockerfile"
+      - "medha-extraction/Dockerfile"
       - "docker-compose.yml"
       - ".github/workflows/docker-build.yml"
   push:
@@ -30,8 +30,8 @@ jobs:
       - name: Build Go image
         uses: docker/build-push-action@v6
         with:
-          context: ./go
-          file: ./go/Dockerfile
+          context: ./medha-api
+          file: ./medha-api/Dockerfile
           push: ${{ github.event_name == 'release' }}
           tags: |
             agent-mem-go:${{ github.sha }}
@@ -50,8 +50,8 @@ jobs:
       - name: Build Python image
         uses: docker/build-push-action@v6
         with:
-          context: ./py
-          file: ./py/Dockerfile
+          context: ./medha-extraction
+          file: ./medha-extraction/Dockerfile
           push: ${{ github.event_name == 'release' }}
           tags: |
             agent-mem-py:${{ github.sha }}

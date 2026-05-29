@@ -32,7 +32,7 @@ func (s *Store) EnsureSession(ctx context.Context, id, project, cwd string) (*Se
 	now := time.Now().UTC()
 	_, err := s.DB.ExecContext(ctx, `
         INSERT INTO sessions (id, project, cwd, status, started_at, updated_at)
-        VALUES (?, ?, ?, 'active', ?, ?)
+        VALUES ($1, $2, $3, 'active', $4, $5)
         ON CONFLICT(id) DO NOTHING
     `, id, project, cwd, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
@@ -45,7 +45,7 @@ func (s *Store) EnsureSession(ctx context.Context, id, project, cwd string) (*Se
 func (s *Store) GetSession(ctx context.Context, id string) (*SessionRow, error) {
 	row := s.DB.QueryRowContext(ctx, `
         SELECT id, project, cwd, status, observation_count, started_at, updated_at, ended_at
-        FROM sessions WHERE id = ?
+        FROM sessions WHERE id = $1
     `, id)
 	var (
 		r            SessionRow
@@ -75,8 +75,8 @@ func (s *Store) GetSession(ctx context.Context, id string) (*SessionRow, error) 
 func (s *Store) IncrementSessionObservationCount(ctx context.Context, sessionID string) error {
 	_, err := s.DB.ExecContext(ctx, `
         UPDATE sessions
-        SET observation_count = observation_count + 1, updated_at = ?
-        WHERE id = ?
+        SET observation_count = observation_count + 1, updated_at = $1
+        WHERE id = $2
     `, time.Now().UTC().Format(time.RFC3339Nano), sessionID)
 	return err
 }
@@ -86,8 +86,8 @@ func (s *Store) MarkSessionEnded(ctx context.Context, sessionID string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.DB.ExecContext(ctx, `
         UPDATE sessions
-        SET status = 'completed', ended_at = COALESCE(ended_at, ?), updated_at = ?
-        WHERE id = ?
+        SET status = 'completed', ended_at = COALESCE(ended_at, $1), updated_at = $2
+        WHERE id = $3
     `, now, now, sessionID)
 	return err
 }
@@ -140,7 +140,7 @@ func (s *Store) InsertRawObservation(ctx context.Context, o *ObservationRow) err
             tool_name, tool_input_json, tool_output, user_prompt,
             raw_json, modality, image_ref, has_secrets,
             compressed, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, $13)
     `,
 		o.ID, o.SessionID, o.Project, o.HookType,
 		o.ToolName, o.ToolInputJSON, o.ToolOutput, o.UserPrompt,
@@ -159,7 +159,7 @@ func (s *Store) GetObservation(ctx context.Context, id string) (*ObservationRow,
                type, title, subtitle, facts_json, narrative, concepts_json,
                files_json, importance, confidence, image_description,
                created_at, compressed_at
-        FROM observations WHERE id = ?
+        FROM observations WHERE id = $1
     `, id)
 
 	var (
@@ -214,18 +214,18 @@ func (s *Store) UpdateCompressedFields(ctx context.Context, id string, c *Observ
 	_, err := s.DB.ExecContext(ctx, `
         UPDATE observations SET
             compressed         = 1,
-            type               = ?,
-            title              = ?,
-            subtitle           = ?,
-            facts_json         = ?,
-            narrative          = ?,
-            concepts_json      = ?,
-            files_json         = ?,
-            importance         = ?,
-            confidence         = ?,
-            image_description  = ?,
-            compressed_at      = ?
-        WHERE id = ?
+            type               = $1,
+            title              = $2,
+            subtitle           = $3,
+            facts_json         = $4,
+            narrative          = $5,
+            concepts_json      = $6,
+            files_json         = $7,
+            importance         = $8,
+            confidence         = $9,
+            image_description  = $10,
+            compressed_at      = $11
+        WHERE id = $12
     `,
 		c.Type, c.Title, c.Subtitle, c.FactsJSON, c.Narrative,
 		c.ConceptsJSON, c.FilesJSON, c.Importance, c.Confidence,

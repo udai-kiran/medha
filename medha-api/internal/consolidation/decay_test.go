@@ -3,22 +3,15 @@ package consolidation
 import (
 	"context"
 	"math"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/udai-kiran/medha/internal/state"
+	"github.com/udai-kiran/medha/internal/testutil"
 )
 
 func openDecayStore(t *testing.T) *state.Store {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "decay.db")
-	s, err := state.Open(context.Background(), state.Options{Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return testutil.OpenStore(t)
 }
 
 func TestDecay_FreshMemoryBarelyChanges(t *testing.T) {

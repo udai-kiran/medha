@@ -3,12 +3,12 @@ name: Go tests
 on:
   pull_request:
     paths:
-      - "go/**"
+      - "medha-api/**"
       - ".github/workflows/go-test.yml"
   push:
     branches: [main, master]
     paths:
-      - "go/**"
+      - "medha-api/**"
       - ".github/workflows/go-test.yml"
 
 concurrency:
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: ./go
+        working-directory: ./medha-api
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +28,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.3"
-          cache-dependency-path: go/go.sum
+          cache-dependency-path: medha-api/go.sum
 
       - name: Verify module
         run: go mod verify
@@ -58,4 +58,4 @@ jobs:
         if: always()
         with:
           name: go-coverage
-          path: go/coverage.out
+          path: medha-api/coverage.out

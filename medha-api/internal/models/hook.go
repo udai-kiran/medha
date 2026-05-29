@@ -1,7 +1,7 @@
 // Package models holds the canonical Go structs shared across capture, search,
 // and consolidation. JSON tags here are the source of truth for the
 // /agentmemory/* API contracts — keep them aligned with the Python pydantic
-// models in py/agent_mem/models.
+// models in medha-extraction/medha/models.
 package models
 
 import (

@@ -85,8 +85,8 @@ curl -s -X POST http://localhost:3111/agentmemory/smart-search \
 ## Layout
 
 ```
-go/             Go service (cmd/api, cmd/worker, cmd/mcp, internal/*)
-py/             Python service (agent_mem/*, tests/)
+medha-api/      Go service (cmd/api, cmd/worker, cmd/mcp, internal/*)
+medha-extraction/  Python service (medha/*, tests/)
 docs/
   ADRs/         Architecture Decision Records
   api/          OpenAPI spec
@@ -110,9 +110,9 @@ curl -N http://localhost:3113/events     # SSE stream
 ### Connect MCP from Claude Code
 
 ```bash
-claude mcp add agent-mem -- go run ./cmd/mcp
+claude mcp add agent-mem -- go run ./medha-api/cmd/mcp
 # or compiled
-claude mcp add agent-mem -- $(pwd)/go/bin/agent-mem-mcp
+claude mcp add agent-mem -- $(pwd)/medha-api/bin/agent-mem-mcp
 ```
 
 The MCP server exposes seven tools: `smart-search`, `recall`, `remember`,
@@ -123,14 +123,14 @@ introspection methods (`tools/list`, `resources/list`, `prompts/list`).
 
 ```bash
 make lint                          # golangci-lint + ruff + mypy
-cd go && go test ./... -race        # race detector (requires cgo)
-cd go && go test ./... -coverprofile=cov.out && go tool cover -html=cov.out
+cd medha-api && go test ./... -race        # race detector (requires cgo)
+cd medha-api && go test ./... -coverprofile=cov.out && go tool cover -html=cov.out
 ```
 
 ### Reset state
 
 ```bash
-rm -rf go/bin py/.venv data/
+rm -rf medha-api/bin medha-extraction/.venv data/
 make setup
 ```
 
