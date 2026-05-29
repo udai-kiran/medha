@@ -315,8 +315,8 @@ func decodeVector(b []byte, dim int) ([]float32, error) {
 	return out, nil
 }
 
-// Compile-time assertion that VectorIndex satisfies SearchEngine.
-var _ SearchEngine = (*VectorIndex)(nil)
+// Compile-time assertion that VectorIndex satisfies Engine.
+var _ Engine = (*VectorIndex)(nil)
 
 // Stats exposes index statistics.
 func (v *VectorIndex) Stats() (totalDocs, dimension int) {

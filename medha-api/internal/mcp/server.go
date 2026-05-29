@@ -168,7 +168,7 @@ func (s *Server) RegisterPrompt(p PromptDefinition) {
 
 // registerCore wires the always-present MCP protocol methods.
 func (s *Server) registerCore() {
-	s.Register("initialize", func(ctx context.Context, params json.RawMessage) (any, *Error) {
+	s.Register("initialize", func(_ context.Context, params json.RawMessage) (any, *Error) {
 		return map[string]any{
 			"protocolVersion": ProtocolVersion,
 			"capabilities": map[string]any{

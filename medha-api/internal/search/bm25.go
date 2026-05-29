@@ -22,9 +22,9 @@ type Hit struct {
 	Snippet string  `json:"snippet,omitempty"`
 }
 
-// SearchEngine is the contract every single-modality engine implements
+// Engine is the contract every single-modality engine implements
 // (BM25, vector, graph). The hybrid orchestrator (Task 17) consumes this.
-type SearchEngine interface {
+type Engine interface {
 	// Search returns up to ``limit`` ranked hits for the given project + query.
 	Search(ctx context.Context, project, query string, limit int) ([]Hit, error)
 }
@@ -301,8 +301,8 @@ func (b *BM25) String() string {
 	return fmt.Sprintf("BM25{totalDocs=%d avgDocLen=%.2f}", b.totalDocs, b.avgDocLen)
 }
 
-// Compile-time assertion that BM25 satisfies SearchEngine.
-var _ SearchEngine = (*BM25)(nil)
+// Compile-time assertion that BM25 satisfies Engine.
+var _ Engine = (*BM25)(nil)
 
 // HelperBuildText is used by Task 18 to assemble the indexable text for a
 // CompressedObservation. Centralised here so the indexer and the search side

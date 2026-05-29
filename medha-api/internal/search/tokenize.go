@@ -1,6 +1,6 @@
 // Package search owns the indexes and ranking primitives: BM25 (this file +
 // bm25.go), vector (Task 15), graph (Task 16), and the RRF orchestrator
-// (Task 17). All three single-modality engines satisfy the SearchEngine
+// (Task 17). All three single-modality engines satisfy the Engine
 // interface so the hybrid path can call them uniformly.
 package search
 

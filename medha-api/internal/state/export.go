@@ -237,7 +237,7 @@ func stringOrEmpty(v any) string {
 // Each line is a JSON object; we look for tool_use and tool_result pairs.
 func (s *Store) ImportJSONL(ctx context.Context, project, sessionID string, lines []string) (int, error) {
 	if sessionID == "" {
-		sessionID = "import-" + uint32Hex(fnv32(strings.Join(lines[:min(5, len(lines))], "")))
+		sessionID = "import-" + uint32Hex(fnv32(strings.Join(lines[:minInt(5, len(lines))], "")))
 	}
 	_, _ = s.EnsureSession(ctx, sessionID, project, "")
 
@@ -257,7 +257,7 @@ func (s *Store) ImportJSONL(ctx context.Context, project, sessionID string, line
 		if msgType != "tool_use" && msgType != "tool_result" {
 			continue
 		}
-		obsID := fmt.Sprintf("imp-%s-%d", sessionID[:min(8, len(sessionID))], i)
+		obsID := fmt.Sprintf("imp-%s-%d", sessionID[:minInt(8, len(sessionID))], i)
 		rawJSON, _ := json.Marshal(obj)
 		ts := now.Add(time.Duration(i) * time.Millisecond).Format(time.RFC3339Nano)
 		_, err := s.DB.ExecContext(ctx, `
@@ -273,7 +273,7 @@ func (s *Store) ImportJSONL(ctx context.Context, project, sessionID string, line
 	return imported, nil
 }
 
-func min(a, b int) int {
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

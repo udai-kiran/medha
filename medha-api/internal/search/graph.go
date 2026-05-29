@@ -34,7 +34,7 @@ type Edge struct {
 	SourceObservationID string
 }
 
-// GraphIndex is the PostgreSQL-backed knowledge graph. It implements SearchEngine
+// GraphIndex is the PostgreSQL-backed knowledge graph. It implements Engine
 // — query → entity match → BFS-2 → observations that referenced any reachable
 // entity. Neo4j enrichment layers on top via a separate store.
 type GraphIndex struct {
@@ -214,7 +214,7 @@ func (g *GraphIndex) BFSTraverse(ctx context.Context, project string, seeds []st
 	return visited, nil
 }
 
-// Search satisfies SearchEngine: query → matched entities → BFS → observations.
+// Search satisfies Engine: query → matched entities → BFS → observations.
 func (g *GraphIndex) Search(ctx context.Context, project, query string, limit int) ([]Hit, error) {
 	if limit <= 0 {
 		limit = 10
@@ -320,5 +320,5 @@ func newEdgeID() string {
 	return "edg-" + hex.EncodeToString(b[:])
 }
 
-// Compile-time assertion that GraphIndex satisfies SearchEngine.
-var _ SearchEngine = (*GraphIndex)(nil)
+// Compile-time assertion that GraphIndex satisfies Engine.
+var _ Engine = (*GraphIndex)(nil)

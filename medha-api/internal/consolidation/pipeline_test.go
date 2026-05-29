@@ -115,7 +115,7 @@ func TestPipeline_FallsBackOnPythonError(t *testing.T) {
 		[]string{"src/auth.ts"}, []string{"auth"})
 
 	// Python that 500s — pipeline must fall back to the synthetic Go summary.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	defer srv.Close()

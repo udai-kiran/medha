@@ -809,7 +809,7 @@ func RegisterMemoryTools(s *Server, deps MemoryToolsDeps) {
 		Name:        "diagnose",
 		Description: "Run system health checks and return a diagnostic report.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-		Handler: func(ctx context.Context, args map[string]any) (any, *Error) {
+		Handler: func(ctx context.Context, _ map[string]any) (any, *Error) {
 			report, err := deps.Store.Diagnose(ctx)
 			if err != nil {
 				return nil, &Error{Code: ErrInternal, Message: err.Error()}
@@ -822,7 +822,7 @@ func RegisterMemoryTools(s *Server, deps MemoryToolsDeps) {
 		Name:        "status",
 		Description: "Report agent_mem health: counts of sessions/observations/memories and schema version.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-		Handler: func(ctx context.Context, args map[string]any) (any, *Error) {
+		Handler: func(ctx context.Context, _ map[string]any) (any, *Error) {
 			var sessions, obs, mems int
 			_ = deps.Store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&sessions)
 			_ = deps.Store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM observations`).Scan(&obs)

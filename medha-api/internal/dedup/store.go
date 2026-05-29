@@ -49,7 +49,7 @@ func NewWindow(duration time.Duration) *Window {
 
 // Seen checks the per-session map; records the key when not seen. Returns
 // true if (sessionID, key) was already present and not expired.
-func (w *Window) Seen(ctx context.Context, sessionID, key string) (bool, error) {
+func (w *Window) Seen(_ context.Context, sessionID, key string) (bool, error) {
 	if sessionID == "" || key == "" {
 		return false, nil
 	}
@@ -128,6 +128,6 @@ func (w *Window) Size() int {
 type NoOpDeduper struct{}
 
 // Seen always returns false (never a duplicate).
-func (NoOpDeduper) Seen(ctx context.Context, sessionID, key string) (bool, error) {
+func (NoOpDeduper) Seen(_ context.Context, sessionID, key string) (bool, error) {
 	return false, nil
 }
