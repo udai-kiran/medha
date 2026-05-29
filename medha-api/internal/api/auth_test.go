@@ -10,7 +10,7 @@ import (
 
 func TestBearerAuth_AllowsGETWithoutToken(t *testing.T) {
 	mw := BearerAuth("secret")
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, req)
@@ -21,7 +21,7 @@ func TestBearerAuth_AllowsGETWithoutToken(t *testing.T) {
 
 func TestBearerAuth_RejectsMutatingWithoutToken(t *testing.T) {
 	mw := BearerAuth("secret")
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 	req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader([]byte("{}")))
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, req)
@@ -32,7 +32,7 @@ func TestBearerAuth_RejectsMutatingWithoutToken(t *testing.T) {
 
 func TestBearerAuth_AcceptsCorrectToken(t *testing.T) {
 	mw := BearerAuth("secret")
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 	req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader([]byte("{}")))
 	req.Header.Set("Authorization", "Bearer secret")
 	w := httptest.NewRecorder()
@@ -44,7 +44,7 @@ func TestBearerAuth_AcceptsCorrectToken(t *testing.T) {
 
 func TestBearerAuth_DisabledWhenSecretEmpty(t *testing.T) {
 	mw := BearerAuth("")
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 	req := httptest.NewRequest(http.MethodPost, "/x", bytes.NewReader([]byte("{}")))
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, req)
@@ -56,7 +56,7 @@ func TestBearerAuth_DisabledWhenSecretEmpty(t *testing.T) {
 func TestRateLimiter_AllowsBurst(t *testing.T) {
 	rl := NewRateLimiter(3, time.Hour)
 	mw := rl.Middleware()
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/x", nil)
 		req.RemoteAddr = "1.2.3.4:5678"
@@ -79,7 +79,7 @@ func TestRateLimiter_AllowsBurst(t *testing.T) {
 func TestRateLimiter_PerKey(t *testing.T) {
 	rl := NewRateLimiter(1, time.Hour)
 	mw := rl.Middleware()
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 	// First IP gets one token.
 	a := httptest.NewRequest(http.MethodGet, "/x", nil)
 	a.RemoteAddr = "1.2.3.4:5678"
@@ -101,7 +101,7 @@ func TestRateLimiter_PerKey(t *testing.T) {
 func TestRateLimiter_NilIsPassthrough(t *testing.T) {
 	var rl *RateLimiter
 	mw := rl.Middleware()
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
 	w := httptest.NewRecorder()
 	mw(next).ServeHTTP(w, req)

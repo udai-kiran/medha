@@ -15,7 +15,7 @@ import (
 // LocalEmbedder's properties: same input → same vector, L2-normalised.
 type fakeEmbedder struct{ dim int }
 
-func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, int, error) {
+func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, int, error) {
 	vecs := make([][]float32, len(texts))
 	for i, t := range texts {
 		vecs[i] = f.embedOne(t)

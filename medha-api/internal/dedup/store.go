@@ -128,6 +128,6 @@ func (w *Window) Size() int {
 type NoOpDeduper struct{}
 
 // Seen always returns false (never a duplicate).
-func (NoOpDeduper) Seen(_ context.Context, sessionID, key string) (bool, error) {
+func (NoOpDeduper) Seen(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
 }

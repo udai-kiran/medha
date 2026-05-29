@@ -108,7 +108,7 @@ func (a InternalAPI) PostCompressed(w http.ResponseWriter, r *http.Request) {
 
 // buildIndexText assembles the searchable text for BM25 + vector indexing.
 // Centralised here so both the callback and any backfill share the same shape.
-func buildIndexText(row *state.ObservationRow, cb CompressedCallback) string {
+func buildIndexText(_ *state.ObservationRow, cb CompressedCallback) string {
 	parts := []string{cb.Title, cb.Subtitle, cb.Narrative}
 	parts = append(parts, cb.Concepts...)
 	parts = append(parts, cb.Files...)

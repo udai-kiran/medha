@@ -136,7 +136,7 @@ func (h *Handler) serveSSE(w http.ResponseWriter, r *http.Request) {
 //go:embed dashboard.html
 var dashboardHTML string
 
-func (h *Handler) serveDashboard(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serveDashboard(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(dashboardHTML))
 }

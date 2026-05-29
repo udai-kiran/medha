@@ -168,7 +168,7 @@ func (s *Server) RegisterPrompt(p PromptDefinition) {
 
 // registerCore wires the always-present MCP protocol methods.
 func (s *Server) registerCore() {
-	s.Register("initialize", func(_ context.Context, params json.RawMessage) (any, *Error) {
+	s.Register("initialize", func(_ context.Context, _ json.RawMessage) (any, *Error) {
 		return map[string]any{
 			"protocolVersion": ProtocolVersion,
 			"capabilities": map[string]any{
@@ -179,12 +179,12 @@ func (s *Server) registerCore() {
 			"serverInfo": map[string]any{"name": s.Name, "version": s.Version},
 		}, nil
 	})
-	s.Register("initialized", func(ctx context.Context, params json.RawMessage) (any, *Error) {
+	s.Register("initialized", func(_ context.Context, _ json.RawMessage) (any, *Error) {
 		// Notification — no response needed but JSON-RPC permits returning nil.
 		return nil, nil
 	})
 
-	s.Register("tools/list", func(ctx context.Context, params json.RawMessage) (any, *Error) {
+	s.Register("tools/list", func(_ context.Context, _ json.RawMessage) (any, *Error) {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 		out := make([]map[string]any, 0, len(s.tools))

@@ -137,16 +137,16 @@ func hydrateResult(ctx context.Context, store *state.Store, h search.Hit) SmartS
 	return out
 }
 
-func clipSnippet(s string, max int) string {
-	if max <= 0 {
+func clipSnippet(s string, n int) string {
+	if n <= 0 {
 		return ""
 	}
-	if len(s) <= max {
+	if len(s) <= n {
 		return s
 	}
 	// Try to break on a word boundary close to the cut.
-	cut := s[:max]
-	if idx := strings.LastIndexAny(cut, " \t\n"); idx > max/2 {
+	cut := s[:n]
+	if idx := strings.LastIndexAny(cut, " \t\n"); idx > n/2 {
 		return cut[:idx] + "…"
 	}
 	return cut + "…"
