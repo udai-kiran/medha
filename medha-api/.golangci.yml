@@ -1,0 +1,23 @@
+linters:
+  enable-all: false
+  enable:
+    - bodyclose
+    - errcheck
+    - gocyclo
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unused
+
+linters-settings:
+  gocyclo:
+    # Dispatch/registration functions like RegisterMemoryTools are inherently
+    # complex; 85 gives room for large switch-style routers without noise.
+    min-complexity: 85
+
+issues:
+  exclude-rules:
+    # Test files don't need the same strictness.
+    - path: "_test\\.go"
+      linters: [gocyclo]

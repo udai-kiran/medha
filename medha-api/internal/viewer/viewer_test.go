@@ -123,9 +123,12 @@ func TestHandler_StreamWebSocket(t *testing.T) {
 	defer srv.Close()
 
 	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/stream"
-	c, _, err := websocket.DefaultDialer.Dial(url, nil)
+	c, resp, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if resp != nil {
+		resp.Body.Close()
 	}
 	defer func() { _ = c.Close() }()
 

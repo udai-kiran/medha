@@ -246,7 +246,7 @@ func (v *VectorIndex) Search(ctx context.Context, project, query string, limit i
 		id    string
 		score float64
 	}
-	scored_list := make([]scored, 0, len(v.vectors))
+	scoredList := make([]scored, 0, len(v.vectors))
 	for id, vec := range v.vectors {
 		if project != "" && v.projectOf[id] != project {
 			continue
@@ -255,15 +255,15 @@ func (v *VectorIndex) Search(ctx context.Context, project, query string, limit i
 		if math.IsNaN(s) {
 			continue
 		}
-		scored_list = append(scored_list, scored{id, s})
+		scoredList = append(scoredList, scored{id, s})
 	}
-	sort.SliceStable(scored_list, func(i, j int) bool { return scored_list[i].score > scored_list[j].score })
+	sort.SliceStable(scoredList, func(i, j int) bool { return scoredList[i].score > scoredList[j].score })
 
-	if len(scored_list) > limit {
-		scored_list = scored_list[:limit]
+	if len(scoredList) > limit {
+		scoredList = scoredList[:limit]
 	}
-	hits := make([]Hit, len(scored_list))
-	for i, s := range scored_list {
+	hits := make([]Hit, len(scoredList))
+	for i, s := range scoredList {
 		hits[i] = Hit{ID: s.id, Score: s.score}
 	}
 	return hits, nil

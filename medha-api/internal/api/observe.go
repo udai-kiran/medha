@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/udai-kiran/medha/internal/dedup"
@@ -273,8 +272,3 @@ func newObservationID() string {
 	return "obs-" + hex.EncodeToString(b[:])
 }
 
-// hookTypeIsValidString is a small helper used in benchmarks/tests that
-// don't import the models package directly.
-func hookTypeIsValidString(s string) bool {
-	return models.HookType(strings.ToLower(s)).IsValid()
-}

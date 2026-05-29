@@ -101,20 +101,20 @@ func (s *Store) DetectAndSavePatterns(ctx context.Context, project string, limit
 		pattern string
 		count   int
 	}
-	var ranked_ []ranked
+	var rankings []ranked
 	for k, v := range counts {
 		if v >= 2 {
-			ranked_ = append(ranked_, ranked{k, v})
+			rankings = append(rankings, ranked{k, v})
 		}
 	}
-	sort.Slice(ranked_, func(i, j int) bool { return ranked_[i].count > ranked_[j].count })
-	if len(ranked_) > limit {
-		ranked_ = ranked_[:limit]
+	sort.Slice(rankings, func(i, j int) bool { return rankings[i].count > rankings[j].count })
+	if len(rankings) > limit {
+		rankings = rankings[:limit]
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var result []*PatternRow
-	for _, r := range ranked_ {
+	for _, r := range rankings {
 		exJSON, _ := json.Marshal(examples[r.pattern])
 		id := newPatternID(project, r.pattern)
 		_, err := s.DB.ExecContext(ctx, `

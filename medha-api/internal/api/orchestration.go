@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -398,8 +396,3 @@ func (a OrchestrationAPI) NextAction(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"action": action})
 }
 
-// Ensure crypto/rand is imported (matches randHex in memories.go).
-var _ = rand.Read
-
-// hexFor avoids "imported and not used" if randHex moves out of memories.go.
-func hexFor(b []byte) string { return hex.EncodeToString(b) }
