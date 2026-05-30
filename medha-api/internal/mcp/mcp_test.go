@@ -1,244 +1,172 @@
-package mcp
+package mcp_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
 	"strings"
-	"sync"
 	"testing"
 
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/udai-kiran/medha/internal/mcp"
 	"github.com/udai-kiran/medha/internal/search"
 	"github.com/udai-kiran/medha/internal/state"
 	"github.com/udai-kiran/medha/internal/testutil"
 )
 
-func openMCPStore(t *testing.T) *state.Store {
-	return testutil.OpenStore(t)
-}
-
-func newTestServer(t *testing.T) (*Server, *state.Store) {
+func newTestServer(t *testing.T) (*sdkmcp.Server, *state.Store) {
 	t.Helper()
-	store := openMCPStore(t)
+	store := testutil.OpenStore(t)
 	bm25, _ := search.NewBM25(context.Background(), store)
 	hybrid := &search.Hybrid{BM25: bm25, K: 60}
-	srv := NewServer("agent_mem", "0.0.1", nil)
-	RegisterMemoryTools(srv, MemoryToolsDeps{Store: store, Search: hybrid})
-	RegisterMemoryResources(srv, MemoryToolsDeps{Store: store, Search: hybrid})
-	RegisterMemoryPrompts(srv)
+	srv := mcp.NewMemoryServer("agent_mem", "0.0.1", mcp.MemoryToolsDeps{
+		Store: store, Search: hybrid,
+	})
 	return srv, store
 }
 
-// drive sends a request and returns the parsed response.
-func drive(t *testing.T, srv *Server, req string) Response {
+// connect creates an in-process client session connected to the server.
+func connect(ctx context.Context, t *testing.T, srv *sdkmcp.Server) *sdkmcp.ClientSession {
 	t.Helper()
-	var in bytes.Buffer
-	in.WriteString(req)
-	in.WriteString("\n")
-	var out bytes.Buffer
-	if err := srv.Serve(context.Background(), &in, &out); err != nil && err != io.EOF {
-		t.Fatal(err)
+	t1, t2 := sdkmcp.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, t1, nil); err != nil {
+		t.Fatal("srv.Connect:", err)
 	}
-	var resp Response
-	if err := json.NewDecoder(&out).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v; raw=%q", err, out.String())
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test", Version: "0.0.1"}, nil)
+	cs, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal("client.Connect:", err)
 	}
-	return resp
-}
-
-func TestInitialize(t *testing.T) {
-	srv, _ := newTestServer(t)
-	resp := drive(t, srv, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
-	if resp.Error != nil {
-		t.Fatalf("error: %+v", resp.Error)
-	}
-	res := resp.Result.(map[string]any)
-	if res["protocolVersion"] != ProtocolVersion {
-		t.Errorf("protocolVersion = %v, want %s", res["protocolVersion"], ProtocolVersion)
-	}
-	caps := res["capabilities"].(map[string]any)
-	if _, ok := caps["tools"]; !ok {
-		t.Error("missing tools capability")
-	}
+	t.Cleanup(func() { cs.Close() })
+	return cs
 }
 
 func TestToolsList(t *testing.T) {
+	ctx := context.Background()
 	srv, _ := newTestServer(t)
-	resp := drive(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	if resp.Error != nil {
-		t.Fatalf("error: %+v", resp.Error)
-	}
-	tools := resp.Result.(map[string]any)["tools"].([]any)
-	names := make([]string, 0, len(tools))
-	for _, t := range tools {
-		names = append(names, t.(map[string]any)["name"].(string))
+	cs := connect(ctx, t, srv)
+
+	var names []string
+	for tool, err := range cs.Tools(ctx, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, tool.Name)
 	}
 	for _, want := range []string{"smart-search", "recall", "remember", "forget", "session-history", "status"} {
 		if !sliceContains(names, want) {
-			t.Errorf("missing tool %q in %v", want, names)
+			t.Errorf("missing tool %q; got %v", want, names)
 		}
 	}
 }
 
 func TestRememberThenRecall(t *testing.T) {
+	ctx := context.Background()
 	srv, _ := newTestServer(t)
+	cs := connect(ctx, t, srv)
 
-	// remember
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"remember","arguments":{"project":"p","type":"fact","title":"Use jose","content":"jose for JWT"}}}`
-	resp := drive(t, srv, body)
-	if resp.Error != nil {
-		t.Fatalf("remember error: %+v", resp.Error)
+	res, err := cs.CallTool(ctx, &sdkmcp.CallToolParams{
+		Name:      "remember",
+		Arguments: map[string]any{"project": "p", "type": "fact", "title": "Use jose", "content": "jose for JWT"},
+	})
+	if err != nil {
+		t.Fatal("remember:", err)
 	}
-	// The tool result is wrapped in MCP content.
-	res := resp.Result.(map[string]any)
-	contentArr := res["content"].([]any)
-	inner := contentArr[0].(map[string]any)["text"].(string)
-	var rememberOut struct {
+	if res.IsError {
+		t.Fatalf("remember IsError: %v", res.Content)
+	}
+	text := res.Content[0].(*sdkmcp.TextContent).Text
+	var out struct {
 		MemoryID string `json:"memoryId"`
 	}
-	_ = json.Unmarshal([]byte(inner), &rememberOut)
-	if rememberOut.MemoryID == "" {
-		t.Fatalf("no memoryId in remember response: %s", inner)
+	_ = json.Unmarshal([]byte(text), &out)
+	if out.MemoryID == "" {
+		t.Fatalf("no memoryId in: %s", text)
 	}
 
-	// recall
-	recallBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"recall","arguments":{"memoryId":"` + rememberOut.MemoryID + `"}}}`
-	resp = drive(t, srv, recallBody)
-	if resp.Error != nil {
-		t.Fatalf("recall error: %+v", resp.Error)
+	res, err = cs.CallTool(ctx, &sdkmcp.CallToolParams{
+		Name:      "recall",
+		Arguments: map[string]any{"memoryId": out.MemoryID},
+	})
+	if err != nil {
+		t.Fatal("recall:", err)
 	}
-	recallText := resp.Result.(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if res.IsError {
+		t.Fatalf("recall IsError: %v", res.Content)
+	}
+	recallText := res.Content[0].(*sdkmcp.TextContent).Text
 	if !strings.Contains(recallText, "Use jose") {
 		t.Errorf("recall didn't return saved memory: %s", recallText)
 	}
 }
 
 func TestStatusTool(t *testing.T) {
+	ctx := context.Background()
 	srv, _ := newTestServer(t)
-	resp := drive(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}`)
-	if resp.Error != nil {
-		t.Fatalf("status error: %+v", resp.Error)
+	cs := connect(ctx, t, srv)
+
+	res, err := cs.CallTool(ctx, &sdkmcp.CallToolParams{
+		Name:      "status",
+		Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	text := resp.Result.(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if res.IsError {
+		t.Fatalf("status IsError: %v", res.Content)
+	}
+	text := res.Content[0].(*sdkmcp.TextContent).Text
 	if !strings.Contains(text, "schemaVersion") {
 		t.Errorf("missing schemaVersion in: %s", text)
 	}
 }
 
-func TestUnknownMethod(t *testing.T) {
-	srv, _ := newTestServer(t)
-	resp := drive(t, srv, `{"jsonrpc":"2.0","id":1,"method":"nonexistent/method"}`)
-	if resp.Error == nil || resp.Error.Code != ErrMethodNotFound {
-		t.Errorf("expected MethodNotFound, got %+v", resp.Error)
-	}
-}
-
 func TestUnknownTool(t *testing.T) {
+	ctx := context.Background()
 	srv, _ := newTestServer(t)
-	resp := drive(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"no-such-tool","arguments":{}}}`)
-	if resp.Error == nil || !strings.Contains(resp.Error.Message, "unknown tool") {
-		t.Errorf("expected unknown tool error, got %+v", resp.Error)
+	cs := connect(ctx, t, srv)
+
+	_, err := cs.CallTool(ctx, &sdkmcp.CallToolParams{
+		Name:      "no-such-tool",
+		Arguments: map[string]any{},
+	})
+	if err == nil {
+		t.Error("expected error for unknown tool, got nil")
 	}
 }
 
-func TestResourcesListAndRead(t *testing.T) {
+func TestResourcesList(t *testing.T) {
+	ctx := context.Background()
 	srv, _ := newTestServer(t)
-	resp := drive(t, srv, `{"jsonrpc":"2.0","id":1,"method":"resources/list"}`)
-	if resp.Error != nil {
-		t.Fatal(resp.Error)
-	}
-	resources := resp.Result.(map[string]any)["resources"].([]any)
-	if len(resources) == 0 {
-		t.Fatal("no resources listed")
-	}
+	cs := connect(ctx, t, srv)
 
-	resp = drive(t, srv, `{"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"agentmemory://status"}}`)
-	if resp.Error != nil {
-		t.Fatalf("read: %+v", resp.Error)
+	var uris []string
+	for r, err := range cs.Resources(ctx, nil) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		uris = append(uris, r.URI)
 	}
-	contents := resp.Result.(map[string]any)["contents"].([]any)
-	if len(contents) == 0 {
-		t.Fatal("empty resource contents")
+	if !sliceContains(uris, "agentmemory://status") {
+		t.Errorf("missing agentmemory://status; got %v", uris)
 	}
 }
 
-func TestNotificationNoResponse(t *testing.T) {
+func TestResourceRead(t *testing.T) {
+	ctx := context.Background()
 	srv, _ := newTestServer(t)
-	var in bytes.Buffer
-	in.WriteString(`{"jsonrpc":"2.0","method":"initialized"}` + "\n")
-	var out bytes.Buffer
-	if err := srv.Serve(context.Background(), &in, &out); err != nil && err != io.EOF {
-		t.Fatal(err)
-	}
-	if out.Len() != 0 {
-		t.Errorf("notification should not produce a response; got %q", out.String())
-	}
-}
+	cs := connect(ctx, t, srv)
 
-func TestHTTPHandler(t *testing.T) {
-	srv, _ := newTestServer(t)
-	h := srv.HTTPHandler()
-
-	body := bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-	req := newHTTPReq(t, "POST", "/", body)
-	rec := newHTTPRec(t)
-	h.ServeHTTP(rec, req)
-	if rec.code != 200 {
-		t.Fatalf("status = %d, body=%s", rec.code, rec.body.String())
-	}
-	var resp Response
-	if err := json.NewDecoder(&rec.body).Decode(&resp); err != nil {
-		t.Fatal(err)
-	}
-	if resp.Error != nil {
-		t.Errorf("err = %+v", resp.Error)
-	}
-}
-
-func TestConcurrentReadsSafe(t *testing.T) {
-	srv, _ := newTestServer(t)
-	var wg sync.WaitGroup
-	for g := 0; g < 4; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 20; i++ {
-				_ = drive(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
-			}
-		}()
-	}
-	wg.Wait()
-}
-
-// Tiny HTTP test helpers — keep them here so the test file is self-contained.
-
-type httpRecorder struct {
-	code   int
-	hdr    http.Header
-	body   bytes.Buffer
-}
-
-func (r *httpRecorder) Header() http.Header {
-	if r.hdr == nil {
-		r.hdr = http.Header{}
-	}
-	return r.hdr
-}
-
-func (r *httpRecorder) Write(p []byte) (int, error) { return r.body.Write(p) }
-func (r *httpRecorder) WriteHeader(code int)        { r.code = code }
-
-func newHTTPRec(t *testing.T) *httpRecorder { t.Helper(); return &httpRecorder{code: 200} }
-
-func newHTTPReq(t *testing.T, method, url string, body io.Reader) *http.Request {
-	t.Helper()
-	req, err := http.NewRequest(method, url, body)
+	res, err := cs.ReadResource(ctx, &sdkmcp.ReadResourceParams{URI: "agentmemory://status"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return req
+	if len(res.Contents) == 0 {
+		t.Fatal("empty resource contents")
+	}
+	if !strings.Contains(res.Contents[0].Text, "schemaVersion") {
+		t.Errorf("missing schemaVersion in resource: %s", res.Contents[0].Text)
+	}
 }
 
 func sliceContains(s []string, v string) bool {

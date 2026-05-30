@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1.7
 #
-# Minimal image for the agent_mem MCP stdio server (cmd/mcp).
-# Communicates over stdin/stdout — no ports exposed.
-# Run with: docker run --rm -i --env-file .env.mcp ghcr.io/udai-kiran/agent-mem-mcp:latest
+# Minimal image for the agent_mem MCP server (Streamable HTTP transport).
+# Listens on MCP_PORT (default 3114).
+# Run with: docker run -d -p 3114:3114 --env-file .env.mcp ghcr.io/udai-kiran/agent-mem-mcp:latest
+# Configure Claude Code: claude mcp add agent-mem --transport http http://localhost:3114/mcp
 
 ARG GO_VERSION=1.26.3
 
@@ -23,4 +24,5 @@ WORKDIR /app
 COPY --from=build /out/agent-mem-mcp /app/agent-mem-mcp
 
 USER nonroot:nonroot
+EXPOSE 3114
 ENTRYPOINT ["/app/agent-mem-mcp"]

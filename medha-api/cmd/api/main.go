@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/udai-kiran/medha/internal/api"
 	"github.com/udai-kiran/medha/internal/config"
 	"github.com/udai-kiran/medha/internal/consolidation"
@@ -157,12 +159,14 @@ func main() {
 	// Prometheus metrics — exported at /metrics.
 	metrics := telemetry.NewMetrics()
 
-	// MCP-over-HTTP proxy: clients that can't spawn cmd/mcp talk JSON-RPC
-	// to /agentmemory/mcp. Same tool surface as the stdio binary.
-	mcpServer := mcp.NewServer("agent_mem", "0.1.0", logger)
-	mcp.RegisterMemoryTools(mcpServer, mcp.MemoryToolsDeps{Store: store, Search: hybrid})
-	mcp.RegisterMemoryResources(mcpServer, mcp.MemoryToolsDeps{Store: store, Search: hybrid})
-	mcp.RegisterMemoryPrompts(mcpServer)
+	// MCP Streamable HTTP: mounts at /agentmemory/mcp, all methods.
+	mcpSDKServer := mcp.NewMemoryServer("agent_mem", "0.1.0", mcp.MemoryToolsDeps{
+		Store:  store,
+		Search: hybrid,
+	})
+	mcpHandler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
+		return mcpSDKServer
+	}, &sdkmcp.StreamableHTTPOptions{Stateless: true})
 
 	router := api.NewRouter(cfg, api.RouterDeps{
 		Observe: api.ObserveDeps{
@@ -174,7 +178,7 @@ func main() {
 		},
 		Search:      api.SearchDeps{Hybrid: hybrid, Store: store},
 		IndexBus:    indexBus,
-		MCP:         mcpServer.HTTPHandler(),
+		MCP:         mcpHandler,
 		Metrics:     metrics,
 		AuthSecret:  cfg.AgentMemorySecret,
 		RateLimiter: api.NewRateLimiter(120, time.Minute), // 120 req/min/client

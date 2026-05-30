@@ -75,7 +75,7 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 - **`consolidation/`** — `Pipeline` runs the SessionEnd DAG: fetch observations → POST `/summarize` to Python → POST `/extract` to Python → distil memories → persist. Best-effort: individual steps fail without aborting the rest. `DecayEngine` applies Ebbinghaus decay (`strength *= rate^daysOld`; hard-evict below threshold) on a nightly scheduler.
 - **`dedup/`** — SHA-256 rolling 5-minute window per session to drop duplicate observations.
 - **`privacy/`** — Fail-closed filter applied before any persistence. Strips `<private>…</private>` blocks, redacts API keys/JWTs/key=value secrets, and removes ANSI codes. Sets `HasSecrets` flag on the observation so downstream enrichment is skipped (FR-9).
-- **`mcp/`** — JSON-RPC 2.0 server (stdio primary; HTTP proxy at `/agentmemory/mcp`). Exposes six tools: `smart-search`, `recall`, `remember`, `forget`, `session-history`, `status`. Delegates to the same functions the REST handlers use.
+- **`mcp/`** — MCP server using `modelcontextprotocol/go-sdk`. Streamable HTTP transport (spec 2025-06-18). Tool handlers are thin wrappers over the same store/search functions the REST API uses. Mounted at `/agentmemory/mcp` in the API and served standalone on port 3114 via `cmd/mcp`.
 - **`graph/`** — Optional Neo4j Bolt driver. The service runs in degraded mode when `NEO4J_ENABLED=false` (ADR-0003).
 - **`telemetry/`** — Prometheus metrics (counters: observations, dedup hits, privacy redactions, consolidation runs, LLM/embed calls; histograms: search latency). Served at `/metrics`.
 - **`viewer/`** — WebSocket hub at :3113; broadcasts live observations to the dashboard. SSE stream also available at `GET :3113/events`.
@@ -135,15 +135,17 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 
 ## MCP configuration
 
-```bash
-# Run MCP stdio server (primary)
-claude mcp add agent-mem -- go run ./medha-api/cmd/mcp
+The MCP server uses **Streamable HTTP transport** (MCP spec 2025-06-18) on port 3114.
 
-# Or compiled binary
-claude mcp add agent-mem -- ./medha-api/bin/agent-mem-mcp
+```bash
+# Run via Docker (recommended)
+docker run -d -p 3114:3114 --env-file .env.mcp ghcr.io/udai-kiran/agent-mem-mcp:latest
+
+# Configure Claude Code
+claude mcp add agent-mem --transport http http://localhost:3114/mcp
 ```
 
-The HTTP proxy fallback is available at `POST /agentmemory/mcp` for clients that cannot spawn a subprocess.
+The same MCP surface is also available at `GET|POST /agentmemory/mcp` on the main API (port 3111).
 
 ## Privacy convention for agents
 

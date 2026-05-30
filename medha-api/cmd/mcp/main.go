@@ -1,15 +1,19 @@
-// Command mcp is the agent_mem MCP stdio server.
-// Reads JSON-RPC 2.0 requests on stdin, writes responses on stdout.
-// Designed to be launched by an agent host (Claude Code, Cursor, Cline, …)
-// rather than run interactively.
+// Command mcp is the agent_mem MCP server using Streamable HTTP transport.
+// Listens on MCP_PORT (default 3114) and serves the full agent_mem tool surface.
+// Claude Code config: claude mcp add agent-mem --transport http http://localhost:3114/mcp
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/udai-kiran/medha/internal/config"
 	"github.com/udai-kiran/medha/internal/mcp"
@@ -24,6 +28,11 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		logger.Error("config.invalid", "err", err)
 		os.Exit(2)
+	}
+
+	port := os.Getenv("MCP_PORT")
+	if port == "" {
+		port = "3114"
 	}
 
 	rootCtx, cancel := context.WithCancel(context.Background())
@@ -58,26 +67,39 @@ func main() {
 	graph := search.NewGraphIndex(store)
 	hybrid := &search.Hybrid{BM25: bm25, Vector: vec, Graph: graph, K: 60}
 
-	deps := mcp.MemoryToolsDeps{Store: store, Search: hybrid, PythonBaseURL: cfg.PythonServiceURL}
-	srv := mcp.NewServer("agent_mem", "0.1.0", logger)
-	mcp.RegisterMemoryTools(srv, deps)
-	mcp.RegisterMemoryResources(srv, deps)
-	mcp.RegisterMemoryPrompts(srv)
+	srv := mcp.NewMemoryServer("agent_mem", "0.1.0", mcp.MemoryToolsDeps{
+		Store:         store,
+		Search:        hybrid,
+		PythonBaseURL: cfg.PythonServiceURL,
+	})
 
-	// Soft-shutdown handler.
+	handler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
+		return srv
+	}, &sdkmcp.StreamableHTTPOptions{Stateless: true})
+
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", handler)
+
+	httpSrv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
-		<-stop
-		// Give Serve a moment to return after stdin closes.
-		time.Sleep(50 * time.Millisecond)
-		cancel()
+		logger.Info("mcp.http.listen", "addr", fmt.Sprintf(":%s", port))
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("mcp.http.failed", "err", err)
+			os.Exit(1)
+		}
 	}()
 
-	logger.Info("mcp.serve.start")
-	if err := srv.Serve(rootCtx, os.Stdin, os.Stdout); err != nil {
-		logger.Error("mcp.serve.failed", "err", err)
-		os.Exit(1)
-	}
-	logger.Info("mcp.serve.done")
+	<-stop
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	_ = httpSrv.Shutdown(shutdownCtx)
+	logger.Info("mcp.http.shutdown")
 }

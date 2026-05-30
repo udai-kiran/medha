@@ -80,9 +80,8 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 			r.Post("/search", SmartSearchHandler(deps.Search))
 		}
 		if deps.MCP != nil {
-			// MCP-over-HTTP proxy. Stdio remains the primary transport — this
-			// is the fallback for clients that can't spawn the cmd/mcp binary.
-			r.Method(http.MethodPost, "/mcp", deps.MCP)
+			// Streamable HTTP MCP — accepts GET (SSE), POST (requests), DELETE (session close).
+			r.Handle("/mcp", deps.MCP)
 		}
 	})
 
