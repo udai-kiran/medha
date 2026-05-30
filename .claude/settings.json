@@ -1,0 +1,28 @@
+{
+  "effortLevel": "xhigh",
+  "advisorModel": "opus",
+  "theme": "auto",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/observe-tool.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/session-end.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
