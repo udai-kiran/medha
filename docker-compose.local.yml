@@ -1,0 +1,34 @@
+# Local development overlay — runs only the agent-mem services.
+# External dependencies (PostgreSQL, Neo4j, RabbitMQ) must be reachable via .env.
+#
+# Usage: make run
+#   Starts: go (API :3111), py (Python :5000), mcp (Streamable HTTP :3114)
+
+services:
+  go:
+    depends_on:
+      py:
+        condition: service_healthy
+    environment:
+      QUEUE_BACKEND: memory
+
+  py:
+    env_file: .env
+
+  mcp:
+    build:
+      context: ./medha-api
+      file: ./medha-api/Dockerfile.mcp
+    image: agent-mem-mcp:local
+    container_name: agent-mem-mcp
+    restart: unless-stopped
+    ports:
+      - "3114:3114"
+    env_file: .env.mcp
+    networks: [agentmem]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3114/mcp || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

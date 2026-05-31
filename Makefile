@@ -1,7 +1,7 @@
 # medha — top-level Makefile
 # Wraps Go + Python build/test/lint and Docker Compose bring-up.
 
-.PHONY: help setup build test lint run-go run-py worker compose-up compose-down compose-light clean
+.PHONY: help setup build run test lint run-go run-py worker compose-up compose-down compose-light clean
 
 GO_DIR := medha-api
 PY_DIR := medha-extraction
@@ -9,11 +9,12 @@ PY_DIR := medha-extraction
 help:
 	@echo "medha make targets:"
 	@echo "  setup        Install Go modules and sync Python deps (via uv)"
-	@echo "  build        Build Go binaries"
+	@echo "  build        Build Go binaries (api, mcp, worker)"
+	@echo "  run          Start agent-mem services: Go API :3111, Python :5000, MCP :3114"
 	@echo "  test         Run Go + Python tests"
 	@echo "  lint         Run golangci-lint + ruff + mypy"
-	@echo "  run-go       Run the Go API service locally"
-	@echo "  run-py       Run the Python FastAPI service locally"
+	@echo "  run-go       Run the Go API service locally (no Docker)"
+	@echo "  run-py       Run the Python FastAPI service locally (no Docker)"
 	@echo "  worker       Run the Go async worker"
 	@echo "  compose-up   docker compose up (full stack incl. Neo4j + RabbitMQ)"
 	@echo "  compose-light  docker compose up with lightweight profile (no Neo4j)"
@@ -27,8 +28,12 @@ setup:
 build:
 	cd $(GO_DIR) && go build -o bin/agent-mem-api ./cmd/api
 	cd $(GO_DIR) && go build -o bin/agent-mem-mcp ./cmd/mcp
-	cd $(GO_DIR) && go build -o bin/agent-mem-mcp-shim ./cmd/mcp-shim
 	@if [ -d "$(GO_DIR)/cmd/worker" ]; then cd $(GO_DIR) && go build -o bin/agent-mem-worker ./cmd/worker; fi
+
+## Start agent-mem services only — Go API, Python sidecar, MCP HTTP server.
+## External deps (Postgres, Neo4j) must be reachable via .env / .env.mcp.
+run:
+	docker compose -f docker-compose.yml -f docker-compose.local.yml up --build go py mcp
 
 test:
 	cd $(GO_DIR) && go test ./... -race -cover
