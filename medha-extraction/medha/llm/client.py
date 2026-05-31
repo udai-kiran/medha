@@ -10,13 +10,14 @@ Returns None (→ synthetic fallback) when no model is configured.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Protocol
+
+import structlog
 
 if TYPE_CHECKING:
     from medha.config import Settings  # pragma: no cover
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient(Protocol):
@@ -52,7 +53,7 @@ def build_llm_client(model: str | None, settings: Settings) -> LLMClient | None:
         return None
 
     normalized = _to_bifrost_model(model)
-    logger.info("llm.client_built", extra={"gateway": "bifrost", "model": normalized})
+    logger.info("llm.client_built", gateway="bifrost", model=normalized)
 
     from medha.llm.openai_compat import OpenAICompatibleClient
 

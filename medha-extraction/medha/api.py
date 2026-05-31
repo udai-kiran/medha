@@ -36,9 +36,11 @@ from medha.llm import build_llm_client
 from medha.models import CompressedObservation, Entity, RawObservation, Relationship
 from medha.summarization import ObservationDigest
 from medha.summarization.session import SessionSummarizer, SessionSummarizerConfig, SessionSummary
+import structlog
+
 from medha.utils.logging import configure_logging
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # Per-app Prometheus registry so tests don't leak metrics across runs.
@@ -81,7 +83,7 @@ async def lifespan(app: FastAPI) -> Any:
             f"bifrost:{settings.embedding_fingerprint()}" if settings.embedding_model else "local"
         ),
     }
-    logger.info("py.startup", extra={"version": __version__, "stages": stage_map})
+    logger.info("py.startup", version=__version__, stages=stage_map)
     yield
     logger.info("py.shutdown")
 

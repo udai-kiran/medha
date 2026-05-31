@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass
 from typing import Protocol
 
+import structlog
+
 from medha.config import Settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,10 +60,10 @@ def _check_fingerprint(settings: Settings) -> None:
                 stored = _f.read().strip()
             if stored and stored != current:
                 logger.warning(
-                    "embedding.model_changed — vector index may be stale; "
-                    "reindex required. previous=%s current=%s",
-                    stored,
-                    current,
+                    "embedding.model_changed",
+                    note="vector index may be stale; reindex required",
+                    previous=stored,
+                    current=current,
                 )
         else:
             os.makedirs("data", exist_ok=True)

@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
+import structlog
 from pydantic import BaseModel, Field
 
 from medha.compression.llm_compressor import LLMClient
 from medha.config import Settings
 from medha.utils.validators import clip
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -256,11 +256,11 @@ class SessionSummarizer:
                 timeout=self.config.timeout_s,
             )
         except TimeoutError:
-            logger.warning("summarize.timeout", extra={"session_id": session_id})
+            logger.warning("summarize.timeout", session_id=session_id)
             return synthetic_session_summary(session_id, digests)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "summarize.error", extra={"session_id": session_id, "error": str(exc)}
+                "summarize.error", session_id=session_id, error=str(exc)
             )
             return synthetic_session_summary(session_id, digests)
 
@@ -268,7 +268,8 @@ class SessionSummarizer:
         if parsed is None:
             logger.warning(
                 "summarize.parse_failed",
-                extra={"session_id": session_id, "preview": text[:200]},
+                session_id=session_id,
+                preview=text[:200],
             )
             return synthetic_session_summary(session_id, digests)
         return parsed

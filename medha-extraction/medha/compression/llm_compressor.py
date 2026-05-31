@@ -16,10 +16,11 @@ rather than reject in that case.
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+
+import structlog
 
 from medha.compression.synthetic_compressor import synthetic_compress
 from medha.config import Settings
@@ -27,7 +28,7 @@ from medha.llm.client import LLMClient  # noqa: F401 — re-exported for back-co
 from medha.models import CompressedObservation, RawObservation
 from medha.utils.validators import clip
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -198,12 +199,14 @@ class LLMCompressor:
                 timeout=self.config.timeout_s,
             )
         except TimeoutError:
-            logger.warning("llm_compress.timeout", extra={"observation_id": raw.id})
+            logger.warning("llm_compress.timeout", observation_id=raw.id)
             return synthetic_compress(raw)
         except Exception as exc:  # noqa: BLE001 — fall back on any provider error
             logger.warning(
                 "llm_compress.error",
-                extra={"observation_id": raw.id, "error": str(exc), "provider": self.client.name},
+                observation_id=raw.id,
+                error=str(exc),
+                provider=self.client.name,
             )
             return synthetic_compress(raw)
 
@@ -211,7 +214,8 @@ class LLMCompressor:
         if parsed is None:
             logger.warning(
                 "llm_compress.parse_failed",
-                extra={"observation_id": raw.id, "response_preview": text[:200]},
+                observation_id=raw.id,
+                response_preview=text[:200],
             )
             return synthetic_compress(raw)
         return parsed

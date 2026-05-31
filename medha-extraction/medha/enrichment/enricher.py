@@ -6,14 +6,15 @@ secrets-adjacent and should never leave the host.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import Any
+
+import structlog
 
 from medha.enrichment.cache import EnrichmentCache
 from medha.enrichment.wikipedia import WikipediaEnricher
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass

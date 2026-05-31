@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import logging
 import random
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+import structlog
+
 _T = TypeVar("_T")
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def async_retry(
@@ -49,7 +50,9 @@ def async_retry(
                     sleep = min(max_delay, delay) * (1 + random.uniform(-jitter, jitter))  # noqa: S311
                     logger.warning(
                         "retry.scheduled",
-                        extra={"fn": fn.__name__, "attempt": attempt, "sleep_s": round(sleep, 3)},
+                        fn=fn.__name__,
+                        attempt=attempt,
+                        sleep_s=round(sleep, 3),
                     )
                     await asyncio.sleep(sleep)
                     delay *= 2

@@ -7,13 +7,13 @@ short descriptions, Wikidata IDs, and thumbnail URLs at low quota cost.
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -41,7 +41,7 @@ class WikipediaEnricher:
                     headers={"User-Agent": "agent_mem/0.1 (https://github.com/oneconvergence/agent-mem)"},
                 )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("wikipedia.lookup_failed", extra={"name": name, "error": str(exc)})
+            logger.warning("wikipedia.lookup_failed", name=name, error=str(exc))
             return None
 
         if resp.status_code != 200:

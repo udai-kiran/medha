@@ -1,76 +1,56 @@
-"""Structured JSON logging.
+"""Structured logging via structlog.
 
-Configured once at app startup; later modules just call ``logging.getLogger(__name__)``.
-Each record emits a single JSON object — no human-format mixed in — so log
-aggregators can parse the stream uniformly.
+Call configure_logging(level) once at startup. All subsequent calls to
+structlog.get_logger() or logging.getLogger() emit JSON-formatted records
+through the same processor chain so log aggregators see a uniform stream.
 """
-
 from __future__ import annotations
 
-import json
 import logging
 import sys
-from typing import Any
 
+import structlog
 
-class JSONFormatter(logging.Formatter):
-    """Render each record as one JSON object with the fields we care about."""
-
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
-            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
-            "level": record.levelname.lower(),
-            "logger": record.name,
-            "msg": record.getMessage(),
-        }
-        # Attach structured extras passed via `logger.info("...", extra={...})`.
-        for key, value in record.__dict__.items():
-            if key in _STDLIB_FIELDS:
-                continue
-            payload[key] = value
-        if record.exc_info:
-            payload["exc_info"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
-
-
-# Fields owned by the stdlib LogRecord; we filter these out before attaching extras
-# so each JSON line stays compact and predictable.
-_STDLIB_FIELDS = frozenset(
-    {
-        "name",
-        "msg",
-        "args",
-        "levelname",
-        "levelno",
-        "pathname",
-        "filename",
-        "module",
-        "exc_info",
-        "exc_text",
-        "stack_info",
-        "lineno",
-        "funcName",
-        "created",
-        "msecs",
-        "relativeCreated",
-        "thread",
-        "threadName",
-        "processName",
-        "process",
-        "message",
-        "taskName",
-    }
-)
+# Processors shared by both the native structlog path and the stdlib bridge.
+_SHARED: list[structlog.typing.Processor] = [
+    structlog.contextvars.merge_contextvars,
+    structlog.stdlib.add_log_level,
+    structlog.stdlib.add_logger_name,
+    structlog.processors.TimeStamper(fmt="iso"),
+    structlog.processors.StackInfoRenderer(),
+]
 
 
 def configure_logging(level: str = "info") -> None:
-    """Install the JSON formatter on the root logger.
+    """Configure structlog and the stdlib root logger to emit JSON at *level*.
 
-    Idempotent — calling twice replaces handlers rather than appending duplicates.
+    Idempotent — calling twice replaces handlers rather than appending.
+    Both structlog.get_logger() and logging.getLogger() route through the
+    same processor chain and produce identical JSON output.
     """
     lvl = getattr(logging, level.upper(), logging.INFO)
+
+    structlog.configure(
+        processors=_SHARED
+        + [
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.make_filtering_bound_logger(lvl),
+        cache_logger_on_first_use=True,
+    )
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=_SHARED,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(),
+        ],
+    )
+
     handler = logging.StreamHandler(stream=sys.stdout)
-    handler.setFormatter(JSONFormatter())
+    handler.setFormatter(formatter)
 
     root = logging.getLogger()
     root.handlers = [handler]

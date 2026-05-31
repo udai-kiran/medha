@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 import httpx
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @dataclass
