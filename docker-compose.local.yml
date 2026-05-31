@@ -18,7 +18,7 @@ services:
   mcp:
     build:
       context: ./medha-api
-      file: ./medha-api/Dockerfile.mcp
+      dockerfile: Dockerfile.mcp
     image: agent-mem-mcp:local
     container_name: agent-mem-mcp
     restart: unless-stopped
