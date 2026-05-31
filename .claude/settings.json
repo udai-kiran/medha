@@ -14,6 +14,16 @@
         ]
       }
     ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/notify.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
