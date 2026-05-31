@@ -33,7 +33,7 @@ build:
 ## Start agent-mem services only — Go API, Python sidecar, MCP HTTP server.
 ## External deps (Postgres, Neo4j) must be reachable via .env / .env.mcp.
 run:
-	docker compose -f docker-compose.yml -f docker-compose.local.yml up --build go py mcp
+	docker compose -f docker-compose.local.yml up --build
 
 test:
 	cd $(GO_DIR) && go test ./... -race -cover
