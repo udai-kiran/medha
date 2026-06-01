@@ -95,19 +95,15 @@ func (e *DecayEngine) Run(ctx context.Context) (DecayReport, error) {
 
 	for rows.Next() {
 		var (
-			id              string
-			strength        float64
-			createdAt       string
-			lastRetrieved   *string
-			tier            string
+			id            string
+			strength      float64
+			createdAt     string
+			lastRetrieved *string
+			tier          string
 		)
-		var lastRetrievedNS interface{ Scan(...any) error } // dummy for clarity
-		_ = lastRetrievedNS
-		var lastRetrievedSQL *string
-		if err := rows.Scan(&id, &strength, &createdAt, &lastRetrievedSQL, &tier); err != nil {
+		if err := rows.Scan(&id, &strength, &createdAt, &lastRetrieved, &tier); err != nil {
 			return report, err
 		}
-		lastRetrieved = lastRetrievedSQL
 		report.Evaluated++
 
 		base, _ := time.Parse(time.RFC3339Nano, createdAt)

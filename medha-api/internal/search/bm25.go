@@ -97,10 +97,12 @@ func (b *BM25) warm(ctx context.Context) error {
 	if err := row.Scan(&n, &total); err != nil {
 		return err
 	}
+	b.mu.Lock()
 	b.totalDocs = n
 	if n > 0 {
 		b.avgDocLen = float64(total) / float64(n)
 	}
+	b.mu.Unlock()
 	return nil
 }
 
@@ -185,7 +187,11 @@ func (b *BM25) Search(ctx context.Context, project, query string, limit int) ([]
 	if len(terms) == 0 {
 		return nil, nil
 	}
-	if b.totalDocs == 0 {
+	b.mu.RLock()
+	totalDocs := b.totalDocs
+	avgDocLen := b.avgDocLen
+	b.mu.RUnlock()
+	if totalDocs == 0 {
 		return nil, nil
 	}
 
@@ -202,7 +208,7 @@ func (b *BM25) Search(ctx context.Context, project, query string, limit int) ([]
 		if df == 0 {
 			continue
 		}
-		idfByTerm[t] = math.Log((float64(b.totalDocs)-float64(df)+0.5)/(float64(df)+0.5) + 1)
+		idfByTerm[t] = math.Log((float64(totalDocs)-float64(df)+0.5)/(float64(df)+0.5) + 1)
 	}
 	if len(idfByTerm) == 0 {
 		return nil, nil
@@ -226,7 +232,7 @@ func (b *BM25) Search(ctx context.Context, project, query string, limit int) ([]
 				return nil, err
 			}
 			numer := float64(tf) * (k1 + 1)
-			denom := float64(tf) + k1*(1-bp+bp*float64(docLen)/avg(b.avgDocLen))
+			denom := float64(tf) + k1*(1-bp+bp*float64(docLen)/avg(avgDocLen))
 			scores[docID] += idf * (numer / denom)
 		}
 		if err := rows.Close(); err != nil {
