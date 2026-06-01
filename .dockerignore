@@ -1,0 +1,37 @@
+# Build artifacts
+medha-api/bin/
+medha-api/*.out
+medha-api/coverage.html
+
+# Python artifacts
+medha-extraction/.venv/
+medha-extraction/__pycache__/
+medha-extraction/.pytest_cache/
+medha-extraction/.mypy_cache/
+medha-extraction/.ruff_cache/
+**/__pycache__/
+**/*.pyc
+
+# Local data and state
+data/
+*.db
+
+# Docs and non-build files
+docs/
+deploy/*.yml
+reference/
+tasks/
+*.md
+*.html
+*.log
+*.txt
+
+# Git
+.git/
+.github/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

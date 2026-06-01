@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agent-mem — Data Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    background: #0d1117;
+    color: #c9d1d9;
+    min-height: 100vh;
+    padding: 32px 24px;
+  }
+
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #e6edf3;
+    margin-bottom: 6px;
+    letter-spacing: -0.3px;
+  }
+
+  .subtitle {
+    font-size: 0.78rem;
+    color: #6e7681;
+    margin-bottom: 40px;
+  }
+
+  /* ── Swimlane layout ─────────────────────────────────── */
+  .lanes {
+    display: grid;
+    grid-template-columns: 180px 1fr 1fr 1fr;
+    gap: 0;
+    position: relative;
+  }
+
+  .lane-header {
+    padding: 10px 14px;
+    border-radius: 6px 6px 0 0;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    text-align: center;
+    border: 1px solid transparent;
+  }
+
+  .lane-body {
+    padding: 20px 12px;
+    border: 1px solid #21262d;
+    border-top: none;
+    min-height: 900px;
+    position: relative;
+  }
+
+  /* Lane colours */
+  .lane-hooks   .lane-header { background: #1c1f26; color: #79c0ff; border-color: #1f6feb; }
+  .lane-go      .lane-header { background: #0e1d2e; color: #58a6ff; border-color: #1f6feb; }
+  .lane-python  .lane-header { background: #1a1f2e; color: #a5d6ff; border-color: #388bfd; }
+  .lane-store   .lane-header { background: #1c1a0e; color: #e3b341; border-color: #9e6a03; }
+
+  .lane-hooks  .lane-body { background: #0d1117; border-color: #1f6feb22; }
+  .lane-go     .lane-body { background: #0d1117; border-color: #1f6feb22; }
+  .lane-python .lane-body { background: #0d1117; border-color: #388bfd22; }
+  .lane-store  .lane-body { background: #0d1117; border-color: #9e6a0322; }
+
+  /* ── Blocks ──────────────────────────────────────────── */
+  .block {
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    position: relative;
+    margin-bottom: 10px;
+    border: 1px solid;
+    cursor: default;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+
+  .block:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+
+  .block-title {
+    font-weight: 700;
+    font-size: 0.73rem;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .block-title .icon { font-size: 0.9rem; }
+
+  .block-desc {
+    color: #8b949e;
+    font-size: 0.68rem;
+  }
+
+  .block-tag {
+    display: inline-block;
+    font-size: 0.6rem;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-top: 5px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+
+  /* Block variants */
+  .block-hook   { background: #111827; border-color: #1f6feb55; color: #79c0ff; }
+  .block-go     { background: #0e1a2e; border-color: #1f6feb; color: #58a6ff; }
+  .block-filter { background: #1a0e1f; border-color: #8957e5; color: #d2a8ff; }
+  .block-queue  { background: #0e1f1a; border-color: #3fb950; color: #7ee787; }
+  .block-py     { background: #0e1a2e; border-color: #388bfd; color: #a5d6ff; }
+  .block-db     { background: #1f1a0e; border-color: #9e6a03; color: #e3b341; }
+  .block-search { background: #1a0e0e; border-color: #f78166; color: #ffa198; }
+  .block-mcp    { background: #0e1f1f; border-color: #56d364; color: #7ee787; }
+  .block-decay  { background: #1f1518; border-color: #f85149; color: #ff7b72; }
+
+  .tag-async    { background: #1f2d1f; color: #7ee787; border: 1px solid #3fb95055; }
+  .tag-sync     { background: #1f2626; color: #58a6ff; border: 1px solid #1f6feb55; }
+  .tag-callback { background: #2d1f2d; color: #d2a8ff; border: 1px solid #8957e555; }
+  .tag-nightly  { background: #2d1f1f; color: #ff7b72; border: 1px solid #f8514955; }
+
+  /* ── SVG arrows overlay ──────────────────────────────── */
+  .arrow-layer {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    overflow: visible;
+  }
+
+  /* ── Section labels ──────────────────────────────────── */
+  .phase-label {
+    grid-column: 1 / -1;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #6e7681;
+    padding: 18px 0 6px 0;
+    border-top: 1px solid #21262d;
+    margin-top: 8px;
+  }
+
+  /* ── Flow diagram (main visual) ──────────────────────── */
+  .flow-container {
+    position: relative;
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .flow-svg {
+    width: 100%;
+    min-width: 900px;
+    height: 1100px;
+  }
+
+  /* ── Legend ──────────────────────────────────────────── */
+  .legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    margin-top: 32px;
+    padding: 14px 18px;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    background: #161b22;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.68rem;
+    color: #8b949e;
+  }
+
+  .legend-line {
+    width: 30px;
+    height: 2px;
+    border-radius: 1px;
+  }
+
+  /* ── Detail cards ────────────────────────────────────── */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+    margin-top: 32px;
+  }
+
+  .card {
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 16px;
+    background: #161b22;
+  }
+
+  .card-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #e6edf3;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-title .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .step-list {
+    list-style: none;
+    counter-reset: step;
+  }
+
+  .step-list li {
+    counter-increment: step;
+    font-size: 0.69rem;
+    color: #8b949e;
+    padding: 5px 0 5px 28px;
+    position: relative;
+    border-bottom: 1px solid #21262d22;
+    line-height: 1.5;
+  }
+
+  .step-list li:last-child { border-bottom: none; }
+
+  .step-list li::before {
+    content: counter(step);
+    position: absolute;
+    left: 0;
+    top: 5px;
+    width: 18px;
+    height: 18px;
+    background: #21262d;
+    border-radius: 50%;
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: #6e7681;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    line-height: 18px;
+  }
+
+  .step-list li .highlight { color: #58a6ff; }
+  .step-list li .py-hl    { color: #a5d6ff; }
+  .step-list li .warn-hl  { color: #e3b341; }
+  .step-list li .ok-hl    { color: #7ee787; }
+
+  /* ── Env var table ───────────────────────────────────── */
+  .env-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.68rem;
+    margin-top: 32px;
+  }
+
+  .env-table th {
+    text-align: left;
+    padding: 8px 12px;
+    background: #161b22;
+    color: #6e7681;
+    font-weight: 600;
+    border-bottom: 1px solid #21262d;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .env-table td {
+    padding: 7px 12px;
+    border-bottom: 1px solid #21262d;
+    color: #c9d1d9;
+    vertical-align: top;
+  }
+
+  .env-table tr:hover td { background: #161b22; }
+  .env-table code {
+    background: #21262d;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #79c0ff;
+    font-size: 0.65rem;
+  }
+
+  h2 {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #e6edf3;
+    margin: 36px 0 14px;
+    border-bottom: 1px solid #21262d;
+    padding-bottom: 8px;
+  }
+
+  .port-badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-weight: 700;
+    vertical-align: middle;
+  }
+
+  .port-go   { background: #0e1d2e; color: #58a6ff; border: 1px solid #1f6feb55; }
+  .port-py   { background: #0e1a2e; color: #a5d6ff; border: 1px solid #388bfd55; }
+  .port-mcp  { background: #0e1f1f; color: #7ee787; border: 1px solid #3fb95055; }
+  .port-view { background: #1f1a0e; color: #e3b341; border: 1px solid #9e6a0355; }
+</style>
+</head>
+<body>
+
+<h1>agent-mem — Data Flow</h1>
+<p class="subtitle">How Claude Code hooks, the Go API, the Python sidecar, and PostgreSQL work together</p>
+
+<!-- ══════════════════════════════════════════════════════
+     MAIN FLOW DIAGRAM (SVG)
+═══════════════════════════════════════════════════════ -->
+<div class="flow-container">
+<svg class="flow-svg" viewBox="0 0 960 1100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#1f6feb"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#3fb950"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#8957e5"/>
+    </marker>
+    <marker id="arr-yellow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#e3b341"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#f85149"/>
+    </marker>
+    <marker id="arr-teal" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#56d364"/>
+    </marker>
+    <filter id="glow-blue">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- ── Background lane stripes ── -->
+  <rect x="0"   y="0" width="180" height="1100" fill="#0d0f14"/>
+  <rect x="180" y="0" width="260" height="1100" fill="#0d1117"/>
+  <rect x="440" y="0" width="270" height="1100" fill="#0c1017"/>
+  <rect x="710" y="0" width="250" height="1100" fill="#0f0e0a"/>
+
+  <!-- ── Lane headers ── -->
+  <!-- Claude Code -->
+  <rect x="5"   y="8" width="170" height="34" rx="5" fill="#1c1f26" stroke="#1f6feb" stroke-width="1"/>
+  <text x="90"  y="30" text-anchor="middle" font-family="monospace" font-size="10" font-weight="700" fill="#79c0ff" letter-spacing="1">CLAUDE CODE</text>
+  <text x="90"  y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">hooks</text>
+
+  <!-- Go API -->
+  <rect x="185" y="8" width="250" height="34" rx="5" fill="#0e1d2e" stroke="#1f6feb" stroke-width="1"/>
+  <text x="310" y="30" text-anchor="middle" font-family="monospace" font-size="10" font-weight="700" fill="#58a6ff" letter-spacing="1">GO API</text>
+  <text x="310" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">:3111  :3113  :3114</text>
+
+  <!-- Python -->
+  <rect x="445" y="8" width="260" height="34" rx="5" fill="#1a1f2e" stroke="#388bfd" stroke-width="1"/>
+  <text x="575" y="30" text-anchor="middle" font-family="monospace" font-size="10" font-weight="700" fill="#a5d6ff" letter-spacing="1">PYTHON SIDECAR</text>
+  <text x="575" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">:5000</text>
+
+  <!-- Store -->
+  <rect x="715" y="8" width="240" height="34" rx="5" fill="#1c1a0e" stroke="#9e6a03" stroke-width="1"/>
+  <text x="835" y="30" text-anchor="middle" font-family="monospace" font-size="10" font-weight="700" fill="#e3b341" letter-spacing="1">STORAGE</text>
+  <text x="835" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">PostgreSQL · BM25 · Vector</text>
+
+  <!-- ═══════════════════════════════════
+       PHASE 1 — INGESTION
+  ══════════════════════════════════════ -->
+  <text x="10" y="75" font-family="monospace" font-size="9" fill="#6e7681" letter-spacing="1.5" font-weight="700">PHASE 1 — INGESTION</text>
+  <line x1="0" y1="80" x2="960" y2="80" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Hook block: post_tool_use -->
+  <rect x="10" y="90" width="160" height="50" rx="5" fill="#111827" stroke="#1f6feb55" stroke-width="1"/>
+  <text x="90" y="108" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#79c0ff">post_tool_use</text>
+  <text x="90" y="122" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">fires after each</text>
+  <text x="90" y="133" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">tool call</text>
+
+  <!-- Hook block: notification -->
+  <rect x="10" y="150" width="160" height="40" rx="5" fill="#111827" stroke="#1f6feb55" stroke-width="1"/>
+  <text x="90" y="168" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#79c0ff">notification</text>
+  <text x="90" y="182" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">agent events</text>
+
+  <!-- Arrow: hooks → POST /observe -->
+  <path d="M 170 115 L 230 115" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+  <path d="M 170 170 L 200 170 L 200 115" stroke="#1f6feb" stroke-width="1.5" fill="none"/>
+  <text x="175" y="108" font-family="monospace" font-size="7.5" fill="#58a6ff">POST /observe</text>
+
+  <!-- Privacy Filter -->
+  <rect x="190" y="90" width="148" height="62" rx="5" fill="#1a0e1f" stroke="#8957e5" stroke-width="1"/>
+  <text x="264" y="109" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#d2a8ff">Privacy Filter</text>
+  <text x="264" y="122" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">strip &lt;private&gt; blocks</text>
+  <text x="264" y="133" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">redact API keys/JWTs</text>
+  <text x="264" y="144" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">strip ANSI codes</text>
+
+  <!-- Arrow: privacy → dedup -->
+  <path d="M 338 121 L 360 121" stroke="#8957e5" stroke-width="1.5" fill="none" marker-end="url(#arr-purple)"/>
+
+  <!-- Dedup -->
+  <rect x="360" y="90" width="70" height="62" rx="5" fill="#0e1f1a" stroke="#3fb950" stroke-width="1"/>
+  <text x="395" y="109" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#7ee787">Dedup</text>
+  <text x="395" y="122" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">SHA-256</text>
+  <text x="395" y="132" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">5-min window</text>
+  <text x="395" y="142" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">per session</text>
+
+  <!-- Arrow: dedup → store observation -->
+  <path d="M 430 121 L 720 121" stroke="#3fb950" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
+  <text x="510" y="113" font-family="monospace" font-size="7.5" fill="#7ee787">RawObservation → observations table</text>
+
+  <!-- observations table -->
+  <rect x="720" y="90" width="230" height="62" rx="5" fill="#1f1a0e" stroke="#9e6a03" stroke-width="1"/>
+  <text x="835" y="109" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">observations</text>
+  <text x="835" y="122" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">session_id · project · hookType</text>
+  <text x="835" y="133" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">toolName · narrative · files[]</text>
+  <text x="835" y="144" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">compressed=0 initially</text>
+
+  <!-- Arrow: store → enqueue -->
+  <path d="M 395 152 L 395 175 L 240 175 L 240 195" stroke="#3fb950" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr-green)"/>
+  <text x="285" y="170" font-family="monospace" font-size="7.5" fill="#3fb950">enqueue compress job</text>
+
+  <!-- ═══════════════════════════════════
+       PHASE 2 — COMPRESSION (ASYNC)
+  ══════════════════════════════════════ -->
+  <text x="10" y="205" font-family="monospace" font-size="9" fill="#6e7681" letter-spacing="1.5" font-weight="700">PHASE 2 — ASYNC COMPRESSION</text>
+  <line x1="0" y1="210" x2="960" y2="210" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Queue -->
+  <rect x="190" y="218" width="148" height="52" rx="5" fill="#0e1f1a" stroke="#3fb950" stroke-width="1"/>
+  <text x="264" y="238" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#7ee787">Queue</text>
+  <text x="264" y="251" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">memory (dev) / rabbitmq (prod)</text>
+  <text x="264" y="262" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">QUEUE_BACKEND env var</text>
+
+  <!-- Arrow: queue → worker -->
+  <path d="M 338 244 L 360 244" stroke="#3fb950" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
+
+  <!-- Worker -->
+  <rect x="360" y="218" width="70" height="52" rx="5" fill="#0e1f1a" stroke="#3fb950" stroke-width="1"/>
+  <text x="395" y="237" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#7ee787">Worker</text>
+  <text x="395" y="250" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">Go goroutine</text>
+  <text x="395" y="261" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">consumes jobs</text>
+
+  <!-- Arrow: worker → Python /compress -->
+  <path d="M 430 244 L 448 244" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+  <text x="432" y="238" font-family="monospace" font-size="7.5" fill="#58a6ff">POST /compress</text>
+
+  <!-- Python compress -->
+  <rect x="448" y="218" width="268" height="52" rx="5" fill="#0e1a2e" stroke="#388bfd" stroke-width="1"/>
+  <text x="582" y="238" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#a5d6ff">Python /compress</text>
+  <text x="582" y="251" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">LLMCompressor (XML-structured output)</text>
+  <text x="582" y="262" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">→ synthetic_compressor fallback if Bifrost down</text>
+
+  <!-- Arrow: Python callback → Go /internal -->
+  <path d="M 448 260 L 430 260 L 430 280 L 420 280" stroke="#8957e5" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr-purple)"/>
+  <text x="435" y="275" font-family="monospace" font-size="7.5" fill="#d2a8ff">POST /internal/observation/{id}/compressed</text>
+
+  <!-- Internal handler -->
+  <rect x="190" y="285" width="220" height="42" rx="5" fill="#1a0e1f" stroke="#8957e5" stroke-width="1"/>
+  <text x="300" y="304" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#d2a8ff">Go /internal callback</text>
+  <text x="300" y="317" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">writes compressed narrative + sets compressed=1</text>
+
+  <!-- Arrow: internal → index -->
+  <path d="M 410 306 L 720 306" stroke="#3fb950" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
+  <text x="430" y="298" font-family="monospace" font-size="7.5" fill="#7ee787">BM25 + vector indexed (via IndexBus)</text>
+
+  <!-- BM25 / Vector store -->
+  <rect x="720" y="285" width="230" height="52" rx="5" fill="#1f1a0e" stroke="#9e6a03" stroke-width="1"/>
+  <text x="835" y="304" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">Search Indexes</text>
+  <text x="835" y="317" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">BM25 (keyword) · vector (cosine via /embed)</text>
+  <text x="835" y="328" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">graph (Neo4j BFS, optional)</text>
+
+  <!-- Arrow: Python /embed called by Go for vector -->
+  <path d="M 716 310 L 716 354 L 716 360" stroke="#388bfd" stroke-width="1" fill="none" stroke-dasharray="3,3"/>
+  <path d="M 716 344 L 580 344 L 580 328" stroke="#388bfd" stroke-width="1" fill="none" stroke-dasharray="3,3" marker-end="url(#arr-blue)"/>
+  <text x="586" y="340" font-family="monospace" font-size="7" fill="#388bfd">calls /embed for vector</text>
+
+  <!-- ═══════════════════════════════════
+       PHASE 3 — SESSION END / CONSOLIDATION
+  ══════════════════════════════════════ -->
+  <text x="10" y="368" font-family="monospace" font-size="9" fill="#6e7681" letter-spacing="1.5" font-weight="700">PHASE 3 — SESSION END / CONSOLIDATION</text>
+  <line x1="0" y1="373" x2="960" y2="373" stroke="#21262d" stroke-width="1"/>
+
+  <!-- session_end hook -->
+  <rect x="10" y="382" width="160" height="40" rx="5" fill="#111827" stroke="#1f6feb55" stroke-width="1"/>
+  <text x="90" y="400" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#79c0ff">session_end hook</text>
+  <text x="90" y="413" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">POST /session-end</text>
+
+  <!-- Arrow: session_end → pipeline -->
+  <path d="M 170 402 L 190 402" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+
+  <!-- Pipeline -->
+  <rect x="190" y="382" width="148" height="40" rx="5" fill="#0e1d2e" stroke="#1f6feb" stroke-width="1"/>
+  <text x="264" y="400" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#58a6ff">consolidation.Pipeline</text>
+  <text x="264" y="413" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">SessionEnd DAG</text>
+
+  <!-- Arrow: pipeline → fetch compressed obs -->
+  <path d="M 264 422 L 264 455 L 264 462" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+
+  <!-- Step 1: fetch obs -->
+  <rect x="190" y="462" width="148" height="38" rx="5" fill="#0e1d2e" stroke="#1f6feb55" stroke-width="1"/>
+  <text x="264" y="479" text-anchor="middle" font-family="monospace" font-size="8.5" font-weight="700" fill="#58a6ff">1. fetch compressed obs</text>
+  <text x="264" y="492" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">WHERE compressed=1 for session</text>
+
+  <!-- Arrow → Python /summarize -->
+  <path d="M 338 481 L 448 481" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+  <text x="340" y="474" font-family="monospace" font-size="7.5" fill="#58a6ff">POST /summarize</text>
+
+  <!-- Python /summarize -->
+  <rect x="448" y="462" width="268" height="38" rx="5" fill="#0e1a2e" stroke="#388bfd" stroke-width="1"/>
+  <text x="582" y="479" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#a5d6ff">Python /summarize</text>
+  <text x="582" y="492" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">SessionSummarizer · LLM or synthetic fallback</text>
+
+  <!-- Arrow: summary back to Go -->
+  <path d="M 448 490 L 390 490 L 390 520" stroke="#8957e5" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr-purple)"/>
+  <text x="392" y="510" font-family="monospace" font-size="7.5" fill="#d2a8ff">SessionSummary</text>
+
+  <!-- Step 2: extract entities -->
+  <rect x="190" y="525" width="148" height="38" rx="5" fill="#0e1d2e" stroke="#1f6feb55" stroke-width="1"/>
+  <text x="264" y="542" text-anchor="middle" font-family="monospace" font-size="8.5" font-weight="700" fill="#58a6ff">2. POST /extract</text>
+  <text x="264" y="555" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">per observation</text>
+
+  <!-- Arrow → Python /extract -->
+  <path d="M 338 544 L 448 544" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+
+  <!-- Python /extract -->
+  <rect x="448" y="525" width="268" height="38" rx="5" fill="#0e1a2e" stroke="#388bfd" stroke-width="1"/>
+  <text x="582" y="542" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#a5d6ff">Python /extract</text>
+  <text x="582" y="555" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">heuristic extractor · LLM fallback · entities + rels</text>
+
+  <!-- Arrow: entities → graph_entities -->
+  <path d="M 716 544 L 720 544" stroke="#e3b341" stroke-width="1.5" fill="none" marker-end="url(#arr-yellow)"/>
+
+  <!-- graph_entities -->
+  <rect x="720" y="525" width="230" height="38" rx="5" fill="#1f1a0e" stroke="#9e6a03" stroke-width="1"/>
+  <text x="835" y="542" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">graph_entities</text>
+  <text x="835" y="555" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">PostgreSQL + optional Neo4j (ADR-0003)</text>
+
+  <!-- Step 3: distil memories -->
+  <rect x="190" y="582" width="148" height="38" rx="5" fill="#0e1d2e" stroke="#1f6feb55" stroke-width="1"/>
+  <text x="264" y="599" text-anchor="middle" font-family="monospace" font-size="8.5" font-weight="700" fill="#58a6ff">3. distil memories</text>
+  <text x="264" y="612" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">Go-side → memoryRow</text>
+
+  <!-- Arrow → memories table -->
+  <path d="M 338 601 L 720 601" stroke="#e3b341" stroke-width="1.5" fill="none" marker-end="url(#arr-yellow)"/>
+  <text x="380" y="594" font-family="monospace" font-size="7.5" fill="#e3b341">persist SessionSummary + memories</text>
+
+  <!-- memories table -->
+  <rect x="720" y="582" width="230" height="38" rx="5" fill="#1f1a0e" stroke="#9e6a03" stroke-width="1"/>
+  <text x="835" y="599" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">memories</text>
+  <text x="835" y="612" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">tier · strength · title · content</text>
+
+  <!-- ═══════════════════════════════════
+       PHASE 4 — SEARCH
+  ══════════════════════════════════════ -->
+  <text x="10" y="648" font-family="monospace" font-size="9" fill="#6e7681" letter-spacing="1.5" font-weight="700">PHASE 4 — HYBRID SEARCH</text>
+  <line x1="0" y1="653" x2="960" y2="653" stroke="#21262d" stroke-width="1"/>
+
+  <!-- Agent: smart-search -->
+  <rect x="10" y="662" width="160" height="40" rx="5" fill="#111827" stroke="#1f6feb55" stroke-width="1"/>
+  <text x="90" y="680" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#79c0ff">POST /smart-search</text>
+  <text x="90" y="693" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">or MCP smart-search tool</text>
+
+  <!-- Arrow → Hybrid search -->
+  <path d="M 170 682 L 190 682" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
+
+  <!-- Hybrid -->
+  <rect x="190" y="662" width="148" height="40" rx="5" fill="#1a0e0e" stroke="#f78166" stroke-width="1"/>
+  <text x="264" y="680" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#ffa198">search.Hybrid</text>
+  <text x="264" y="693" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">RRF fusion (k=60) · diversity cap=3</text>
+
+  <!-- Arrow: BM25 query -->
+  <path d="M 264 702 L 264 718 L 380 718 L 380 705" stroke="#f78166" stroke-width="1.2" fill="none" marker-end="url(#arr-red)"/>
+
+  <!-- BM25 -->
+  <rect x="340" y="662" width="82" height="40" rx="5" fill="#1a0e0e" stroke="#f78166" stroke-width="1"/>
+  <text x="381" y="680" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#ffa198">BM25</text>
+  <text x="381" y="693" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">keyword index</text>
+
+  <!-- Arrow: vector query (via Python /embed) -->
+  <path d="M 448 682 L 460 682" stroke="#388bfd" stroke-width="1.2" fill="none" marker-end="url(#arr-blue)"/>
+
+  <!-- Vector (Python embed) -->
+  <rect x="448" y="662" width="140" height="40" rx="5" fill="#0e1a2e" stroke="#388bfd" stroke-width="1"/>
+  <text x="518" y="680" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#a5d6ff">Vector</text>
+  <text x="518" y="693" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">cosine sim · /embed → Bifrost</text>
+
+  <!-- Arrow: graph query -->
+  <path d="M 600 682 L 612 682" stroke="#e3b341" stroke-width="1.2" fill="none" marker-end="url(#arr-yellow)"/>
+
+  <!-- Graph -->
+  <rect x="600" y="662" width="110" height="40" rx="5" fill="#1f1a0e" stroke="#9e6a03" stroke-width="1"/>
+  <text x="655" y="680" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">Graph</text>
+  <text x="655" y="693" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">entity BFS · Neo4j</text>
+
+  <!-- Arrow: results back to RRF → agent -->
+  <path d="M 190 702 L 10 702 L 10 740 L 50 740" stroke="#f78166" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr-red)"/>
+  <text x="12" y="726" font-family="monospace" font-size="7.5" fill="#ffa198">ranked results (RRF)</text>
+
+  <!-- ═══════════════════════════════════
+       PHASE 5 — MCP + DECAY
+  ══════════════════════════════════════ -->
+  <text x="10" y="760" font-family="monospace" font-size="9" fill="#6e7681" letter-spacing="1.5" font-weight="700">PHASE 5 — MCP SERVER + NIGHTLY DECAY</text>
+  <line x1="0" y1="765" x2="960" y2="765" stroke="#21262d" stroke-width="1"/>
+
+  <!-- MCP -->
+  <rect x="190" y="774" width="148" height="52" rx="5" fill="#0e1f1f" stroke="#56d364" stroke-width="1"/>
+  <text x="264" y="793" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#7ee787">MCP Server</text>
+  <text x="264" y="806" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">Streamable HTTP :3114</text>
+  <text x="264" y="817" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">6 tools (spec 2025-06-18)</text>
+
+  <!-- Arrow: MCP ↔ same store/search -->
+  <path d="M 338 800 L 720 800" stroke="#56d364" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr-teal)"/>
+  <text x="360" y="793" font-family="monospace" font-size="7.5" fill="#7ee787">delegates to same store + search functions as REST</text>
+
+  <!-- Decay -->
+  <rect x="190" y="842" width="148" height="52" rx="5" fill="#1f1518" stroke="#f85149" stroke-width="1"/>
+  <text x="264" y="861" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#ff7b72">DecayEngine</text>
+  <text x="264" y="874" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">nightly scheduler</text>
+  <text x="264" y="885" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">strength *= rate^daysOld</text>
+
+  <!-- Arrow: decay → memories -->
+  <path d="M 338 868 L 720 868" stroke="#f85149" stroke-width="1.5" fill="none" marker-end="url(#arr-red)"/>
+  <text x="360" y="861" font-family="monospace" font-size="7.5" fill="#ff7b72">hard-evict below DECAY_EVICTION_THRESHOLD</text>
+
+  <!-- Memories ref line -->
+  <rect x="720" y="770" width="230" height="52" rx="5" fill="#1f1a0e" stroke="#9e6a03" stroke-width="1"/>
+  <text x="835" y="789" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">memories (long-term)</text>
+  <text x="835" y="802" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">1 stored · strength 0.947</text>
+  <text x="835" y="813" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">current DB snapshot</text>
+
+  <!-- Viewer -->
+  <rect x="360" y="920" width="240" height="42" rx="5" fill="#0e1a2e" stroke="#388bfd55" stroke-width="1"/>
+  <text x="480" y="939" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#79c0ff">WebSocket Viewer :3113</text>
+  <text x="480" y="952" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">broadcasts live observations · SSE at /events</text>
+
+  <!-- Arrow: observe → viewer -->
+  <path d="M 395 152 L 395 960 L 360 960 L 360 960" stroke="#1f6feb" stroke-width="1" fill="none" stroke-dasharray="3,3" marker-end="url(#arr-blue)"/>
+
+  <!-- Bifrost box -->
+  <rect x="448" y="920" width="268" height="42" rx="5" fill="#1a1f1a" stroke="#3fb95055" stroke-width="1"/>
+  <text x="582" y="939" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#7ee787">Bifrost LLM Proxy</text>
+  <text x="582" y="952" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">OpenAI-compatible · /v1 · compress / summarize / extract / embed</text>
+
+  <!-- Arrow: Python → Bifrost -->
+  <path d="M 582 868 L 582 920" stroke="#3fb950" stroke-width="1" fill="none" stroke-dasharray="3,3" marker-end="url(#arr-green)"/>
+
+  <!-- Prometheus -->
+  <rect x="720" y="842" width="230" height="42" rx="5" fill="#1a1f1a" stroke="#e3b34155" stroke-width="1"/>
+  <text x="835" y="861" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">Telemetry /metrics</text>
+  <text x="835" y="874" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">Prometheus · counters + histograms</text>
+</svg>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     LEGEND
+═══════════════════════════════════════════════════════ -->
+<div class="legend">
+  <div class="legend-item">
+    <div class="legend-line" style="background:#1f6feb"></div>
+    <span>Sync HTTP call (Go)</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#388bfd"></div>
+    <span>Go → Python call</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#8957e5; border-top: 2px dashed #8957e5; height:0"></div>
+    <span>Python → Go callback</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#3fb950"></div>
+    <span>Queue / async flow</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#e3b341"></div>
+    <span>DB write</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#f85149"></div>
+    <span>Decay / eviction</span>
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#56d364; border-top: 2px dashed #56d364; height:0"></div>
+    <span>MCP delegation</span>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     DETAIL CARDS
+═══════════════════════════════════════════════════════ -->
+<h2>Ingestion path — step by step</h2>
+<div class="cards">
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#79c0ff"></div>Claude Code Hooks</div>
+    <ul class="step-list">
+      <li><span class="highlight">post_tool_use</span> fires after every tool call (Bash, Read, Edit, etc.) and POSTs the tool input/output to <code>/agentmemory/observe</code></li>
+      <li><span class="highlight">notification</span> fires for agent-level events (session start, user messages)</li>
+      <li>Hook payload includes: <code>project</code>, <code>sessionId</code>, <code>hookType</code>, <code>toolName</code>, <code>files[]</code>, raw content</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#d2a8ff"></div>Privacy Filter (Go)</div>
+    <ul class="step-list">
+      <li>Strips <code>&lt;private&gt;…&lt;/private&gt;</code> blocks before any write</li>
+      <li>Regex-redacts API keys, JWTs, <code>key=value</code> secret patterns</li>
+      <li>Strips ANSI escape codes from terminal output</li>
+      <li>Sets <span class="warn-hl">HasSecrets=true</span> flag → downstream LLM enrichment is skipped (FR-9)</li>
+      <li>Fail-closed: if filter errors, observation is dropped</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#7ee787"></div>Dedup + Queue (Go)</div>
+    <ul class="step-list">
+      <li>SHA-256 hash of content checked against a rolling 5-minute window per session</li>
+      <li>Duplicate → <span class="warn-hl">dropped silently</span>, dedup counter incremented in Prometheus</li>
+      <li>Unique → stored as <code>RawObservation</code> (compressed=0) in PostgreSQL</li>
+      <li>Job enqueued: <code>memory</code> queue (dev) or <span class="ok-hl">RabbitMQ</span> (prod, <code>QUEUE_BACKEND</code>)</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#a5d6ff"></div>Python /compress</div>
+    <ul class="step-list">
+      <li>Worker POSTs raw observation to Python <code>/compress</code></li>
+      <li><code>LLMCompressor</code> sends to <span class="py-hl">Bifrost</span> with XML-structured output prompt → returns <code>narrative</code>, <code>concepts[]</code>, <code>files[]</code></li>
+      <li>If Bifrost unreachable → <span class="warn-hl">synthetic_compressor</span> extracts first 3 sentences as fallback</li>
+      <li>Python POSTs result back to Go <code>POST /internal/observation/{id}/compressed</code></li>
+      <li>Go sets <code>compressed=1</code>, fires <code>IndexBus</code> → BM25 + vector re-index</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#58a6ff"></div>Consolidation Pipeline (Go, session end)</div>
+    <ul class="step-list">
+      <li>Triggered by <code>session_end</code> hook → <code>POST /agentmemory/session-end</code></li>
+      <li><strong>Step 1</strong>: fetch all compressed observations for session</li>
+      <li><strong>Step 2</strong>: <span class="highlight">POST /summarize</span> to Python → <code>SessionSummary</code></li>
+      <li><strong>Step 3</strong>: <span class="highlight">POST /extract</span> per observation → entities + relationships → <code>graph_entities</code></li>
+      <li><strong>Step 4</strong>: Go-side <code>distilMemories()</code> → creates <code>Memory</code> rows in PostgreSQL</li>
+      <li>Each step is best-effort — one failure doesn't abort the rest</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#ffa198"></div>Hybrid Search (Go)</div>
+    <ul class="step-list">
+      <li><code>POST /smart-search</code> or MCP <code>smart-search</code> tool</li>
+      <li><span class="highlight">BM25</span>: inverted-index keyword search over compressed narratives</li>
+      <li><span class="highlight">Vector</span>: query text → Python <code>/embed</code> → Bifrost embedding model → cosine similarity</li>
+      <li><span class="highlight">Graph</span>: entity BFS via Neo4j (optional, ADR-0003)</li>
+      <li>Results fused with <span class="ok-hl">Reciprocal Rank Fusion</span> k=60, per-session diversity cap=3</li>
+      <li>Returns ranked hits with scores from all active indexes</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#7ee787"></div>MCP Server (Go, port 3114)</div>
+    <ul class="step-list">
+      <li>Streamable HTTP transport, spec 2025-06-18</li>
+      <li>6 tools today: <code>remember</code>, <code>recall</code>, <code>forget</code>, <code>smart-search</code>, <code>session-history</code>, <code>status</code></li>
+      <li>Tool handlers are thin wrappers — call same <code>store</code> + <code>search</code> functions as the REST API</li>
+      <li>Also mounted at <code>/agentmemory/mcp</code> on the main API (:3111)</li>
+      <li>Standalone MCP binary: <code>cmd/mcp</code></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#ff7b72"></div>Decay Engine (Go, nightly)</div>
+    <ul class="step-list">
+      <li>Runs on a nightly scheduler (Go <code>time.AfterFunc</code>)</li>
+      <li>For each memory: <code>strength *= DECAY_RATE_PER_DAY ^ daysOld</code> (Ebbinghaus curve)</li>
+      <li>Default rate: <code>0.95</code>/day · eviction threshold: <code>0.1</code></li>
+      <li>Memories below threshold → hard-deleted from PostgreSQL</li>
+      <li>Recalling a memory (<code>recall</code> MCP tool) reinforces its strength</li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     KEY ENV VARS
+═══════════════════════════════════════════════════════ -->
+<h2>Key configuration</h2>
+<table class="env-table">
+  <thead>
+    <tr>
+      <th>Variable</th>
+      <th>Default</th>
+      <th>Effect on data flow</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td><code>QUEUE_BACKEND</code></td><td>memory</td><td>In-process queue (jobs lost on restart) vs RabbitMQ for prod</td></tr>
+    <tr><td><code>BIFROST_URL</code></td><td><em>required</em></td><td>Without it the service won't start; drives /compress /summarize /extract /embed</td></tr>
+    <tr><td><code>EMBEDDING_MODEL</code></td><td><em>unset</em></td><td>If unset → local hash fallback instead of real vector embeddings</td></tr>
+    <tr><td><code>LLM_MODEL</code></td><td><em>unset</em></td><td>Model for all LLM stages; per-stage overrides: COMPRESS_MODEL, SUMMARIZE_MODEL, EXTRACT_MODEL</td></tr>
+    <tr><td><code>NEO4J_ENABLED</code></td><td>false</td><td>Graph search leg disabled by default; service runs in degraded mode (ADR-0003)</td></tr>
+    <tr><td><code>AGENTMEMORY_SECRET</code></td><td><em>empty</em></td><td>Empty = auth disabled. Set to require Bearer token on all /agentmemory/* routes</td></tr>
+    <tr><td><code>DECAY_RATE_PER_DAY</code></td><td>0.95</td><td>Ebbinghaus base; lower = faster forgetting</td></tr>
+    <tr><td><code>DECAY_EVICTION_THRESHOLD</code></td><td>0.1</td><td>Memories below this strength are hard-deleted nightly</td></tr>
+    <tr><td><code>PYTHON_SERVICE_URL</code></td><td>http://localhost:5000</td><td>Go → Python callback URL for compress/extract/summarize/embed</td></tr>
+  </tbody>
+</table>
+
+</body>
+</html>

@@ -3,10 +3,11 @@ name: Docker images
 on:
   pull_request:
     paths:
-      - "medha-api/Dockerfile"
-      - "medha-api/Dockerfile.mcp"
-      - "medha-extraction/Dockerfile"
-      - "docker-compose.yml"
+      - "Dockerfile"
+      - "medha-api/**"
+      - "medha-extraction/**"
+      - "deploy/entrypoint.sh"
+      - "deploy/supervisord.conf"
       - ".github/workflows/docker-build.yml"
   push:
     branches: [main, master]
@@ -22,28 +23,20 @@ permissions:
   packages: write
 
 jobs:
-  go-image:
+  build-images:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+    strategy:
+      matrix:
+        include:
+          - name: app
+            image: agent-mem
+            context: .
+            file: Dockerfile
+          - name: py
+            image: agent-mem-py
+            context: ./medha-extraction
+            file: ./medha-extraction/Dockerfile
 
-      - name: Build Go image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./medha-api
-          file: ./medha-api/Dockerfile
-          push: ${{ github.event_name == 'release' }}
-          tags: |
-            agent-mem-go:${{ github.sha }}
-            agent-mem-go:latest
-          build-args: |
-            VERSION=${{ github.sha }}
-          cache-from: type=gha,scope=go
-          cache-to: type=gha,mode=max,scope=go
-
-  mcp-image:
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -59,40 +52,22 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/agent-mem-mcp
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and push MCP image
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./medha-api
-          file: ./medha-api/Dockerfile.mcp
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.sha }}
-          cache-from: type=gha,scope=mcp
-          cache-to: type=gha,mode=max,scope=mcp
-
-  py-image:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build Python image
-        uses: docker/build-push-action@v6
-        with:
-          context: ./medha-extraction
-          file: ./medha-extraction/Dockerfile
-          push: ${{ github.event_name == 'release' }}
-          tags: |
-            agent-mem-py:${{ github.sha }}
-            agent-mem-py:latest
-          cache-from: type=gha,scope=py
-          cache-to: type=gha,mode=max,scope=py
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

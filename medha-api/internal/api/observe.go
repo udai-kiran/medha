@@ -124,11 +124,19 @@ func ObserveHandler(deps ObserveDeps) http.HandlerFunc {
 		}
 
 		// SessionEnd → route to consolidation handler and return 202.
+		// Run in a goroutine with a background context so the pipeline isn't
+		// cancelled when the hook's curl connection closes (--max-time 10s).
 		if payload.HookType == models.HookSessionEnd {
-			if err := deps.SessionEnd.OnSessionEnd(ctx, payload.SessionID); err != nil {
-				log.Error("observe.session_end", "err", err)
-				// Even if consolidation enqueue fails we already accepted.
-			}
+			sessionLog := log
+			sessionID := payload.SessionID
+			handler := deps.SessionEnd
+			go func() {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+				defer cancel()
+				if err := handler.OnSessionEnd(bgCtx, sessionID); err != nil {
+					sessionLog.Error("observe.session_end", "err", err)
+				}
+			}()
 			writeJSON(w, http.StatusAccepted, ObserveResponse{Compressing: false})
 			return
 		}

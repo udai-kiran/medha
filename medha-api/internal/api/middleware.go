@@ -1,14 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"runtime/debug"
 	"time"
 
 	"github.com/udai-kiran/medha/internal/telemetry"
 )
+
+const debugBodyLimit = 4096 // bytes shown in debug log
 
 // RequestIDHeader is the HTTP header carrying the request ID across services.
 const RequestIDHeader = "X-Request-ID"
@@ -43,12 +47,31 @@ func withLogger(next http.Handler) http.Handler {
 }
 
 // requestLog records method, path, status, and duration once the handler returns.
+// At DEBUG level it also logs query params and a body preview before dispatching.
 func requestLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		log := telemetry.LoggerFrom(r.Context())
+
+		if log.Enabled(r.Context(), telemetry.LevelDebug) {
+			// Peek at the body without consuming it.
+			var bodyPreview string
+			if r.Body != nil {
+				buf, _ := io.ReadAll(io.LimitReader(r.Body, debugBodyLimit))
+				r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(buf), r.Body))
+				bodyPreview = string(buf)
+			}
+			log.Debug("http.request.start",
+				"query", r.URL.RawQuery,
+				"body_preview", bodyPreview,
+				"content_type", r.Header.Get("Content-Type"),
+				"user_agent", r.Header.Get("User-Agent"),
+			)
+		}
+
 		ww := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(ww, r)
-		telemetry.LoggerFrom(r.Context()).Info("http.request",
+		log.Info("http.request",
 			"status", ww.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)

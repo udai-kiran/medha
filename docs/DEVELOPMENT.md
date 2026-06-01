@@ -28,7 +28,7 @@ The fastest local loop is to skip Docker and run the two binaries directly.
 
 ```bash
 make run-py
-# uvicorn agent_mem.api:app on :5000
+# uvicorn medha.api:app on :5000
 ```
 
 ### Another terminal: Go API

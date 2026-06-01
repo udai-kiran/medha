@@ -102,8 +102,8 @@ func (a SessionAPI) List(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := a.Store.DB.QueryContext(r.Context(), `
         SELECT id, project, COALESCE(cwd,''), status, observation_count, started_at, updated_at, ended_at
-        FROM sessions WHERE (? = '' OR project = ?)
-        ORDER BY started_at DESC LIMIT ?
+        FROM sessions WHERE ($1 = '' OR project = $2)
+        ORDER BY started_at DESC LIMIT $3
     `, project, project, limit)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "list_failed", err.Error())

@@ -9,6 +9,9 @@ import (
 	"strings"
 )
 
+// LevelDebug re-exports slog.LevelDebug so callers don't import log/slog just to check the level.
+const LevelDebug = slog.LevelDebug
+
 // ctxKey is the unexported context key for the request-scoped logger.
 type ctxKey struct{}
 

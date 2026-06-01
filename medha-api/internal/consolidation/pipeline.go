@@ -103,7 +103,7 @@ func (p *Pipeline) Run(ctx context.Context, sessionID string) (memCount int, err
 func (p *Pipeline) fetchObservations(ctx context.Context, sessionID string) ([]*state.ObservationRow, error) {
 	rows, err := p.Store.DB.QueryContext(ctx, `
         SELECT id FROM observations
-        WHERE session_id = ? AND compressed = 1
+        WHERE session_id = $1 AND compressed = 1
         ORDER BY created_at ASC
     `, sessionID)
 	if err != nil {

@@ -16,7 +16,7 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags "-s -w -X github.com/oneconvergence/agent-mem/internal/api.Version=${VERSION}" \
+    go build -trimpath -ldflags "-s -w -X github.com/udai-kiran/medha/internal/api.Version=${VERSION}" \
     -o /out/agent-mem-api ./cmd/api
 
 # Worker binary appears in Task 12; build conditionally so the M0 image still works.

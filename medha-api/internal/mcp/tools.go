@@ -835,6 +835,8 @@ func RegisterMemoryTools(s *sdkmcp.Server, deps MemoryToolsDeps) {
 			"memoriesCount":     mems,
 		}, nil
 	}))
+
+	RegisterExtendedTools(s, deps)
 }
 
 // RegisterMemoryResources exposes read-only browsable resources.

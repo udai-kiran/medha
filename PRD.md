@@ -11,7 +11,7 @@
 - [`reference/DESIGN.md`](./reference/DESIGN.md) — Neo4j Agent Memory source design (structured entity graph)
 - [`reference/LOW_LEVEL_DESIGN.md`](./reference/LOW_LEVEL_DESIGN.md) — agentmemory source design (hook-based capture + consolidation)
 
-> **Canonical sources:** This `PRD.md` and `agent_mem.md` are the canonical definition of the target system (Go + Python; SQLite + Neo4j + queue). `DESIGN.md` and `LOW_LEVEL_DESIGN.md` are **reference/source designs only** — they describe the two prior systems being combined (the latter is a Node.js/iii, KV-only design with no external DB) and do not dictate the target stack. Where they conflict, this PRD and `agent_mem.md` win.
+> **Canonical sources:** This `PRD.md` and `agent_mem.md` are the canonical definition of the target system (Go + Python; PostgreSQL + optional Neo4j + queue). `DESIGN.md` and `LOW_LEVEL_DESIGN.md` are **reference/source designs only** — they describe the two prior systems being combined (the latter is a Node.js/iii, KV-only design with no external DB) and do not dictate the target stack. Where they conflict, this PRD and `agent_mem.md` win.
 
 ---
 
@@ -197,7 +197,7 @@ Priorities: **P0** = v1 must-have, **P1** = v1 should-have, **P2** = later/nice-
 - **NFR-21 (P0)** One-command local bring-up via Docker Compose (Go + Python + Neo4j + queue).
 - **NFR-22 (P1)** Single-binary Go service; Python service as a slim container.
 - **NFR-23 (P2)** Kubernetes manifests for production deployment.
-- **NFR-24 (P0)** Work without Neo4j in a degraded mode (SQLite-only graph) for lightweight deployments.
+- **NFR-24 (P0)** Work without Neo4j in a degraded mode for lightweight deployments.
 
 ---
 
@@ -205,13 +205,13 @@ Priorities: **P0** = v1 must-have, **P1** = v1 should-have, **P2** = later/nice-
 
 Full detail in [`agent_mem.md`](./agent_mem.md). At a glance:
 
-- **Go service (`:3111`, viewer `:3113`)** — capture, validation, dedup, privacy filtering, state (SQLite), hybrid search, RRF fusion, consolidation orchestration, REST API, MCP server, WebSocket viewer, Neo4j graph ops, telemetry.
+- **Go service (`:3111`, viewer `:3113`)** — capture, validation, dedup, privacy filtering, state (PostgreSQL), hybrid search, RRF fusion, consolidation orchestration, REST API, MCP server, WebSocket viewer, Neo4j graph ops, telemetry.
 - **Python service (`:5000`)** — entity extraction (spaCy/GLiNER/LLM), relationship extraction, compression, summarization, embeddings, enrichment.
-- **Storage** — SQLite (observations, memories, KV state, BM25/vector indexes) + Neo4j (entity graph, relationships, enrichment). Neo4j optional for lightweight mode.
+- **Storage** — PostgreSQL (observations, memories, KV state, BM25/vector indexes) + optional Neo4j (entity graph, relationships, enrichment).
 - **Async** — queue-backed jobs for compression and consolidation; nightly decay job.
 - **Inter-service** — HTTP REST (sync extraction) + queue (async jobs); ~5% latency overhead budget.
 
-**Rationale & trade-offs** (RabbitMQ vs. alternatives, SQLite+Neo4j duality, RRF vs. ML reranker, 4-tier memory, Ebbinghaus decay, Python extraction service) are documented in `agent_mem.md` §"Key Design Decisions".
+**Rationale & trade-offs** (RabbitMQ vs. alternatives, PostgreSQL+Neo4j duality, RRF vs. ML reranker, 4-tier memory, Ebbinghaus decay, Python extraction service) are documented in `agent_mem.md` §"Key Design Decisions".
 
 ---
 
@@ -250,7 +250,8 @@ Mapped from the implementation roadmap in `agent_mem.md`. Timeline is indicative
 
 ## 11. Dependencies
 
-- **Neo4j 5.x** (optional; degraded SQLite-only mode supported per NFR-24).
+- **PostgreSQL 16+** for primary persistence.
+- **Neo4j 5.x** (optional; degraded no-Neo4j mode supported per NFR-24).
 - **Message queue** (RabbitMQ or Redis) for async jobs.
 - **LLM provider** (Anthropic/OpenAI/Gemini) — optional; synthetic path runs without it.
 - **Embedding provider** (local Xenova / OpenAI / Gemini / Voyage) — local default requires no key.
@@ -263,7 +264,7 @@ Mapped from the implementation roadmap in `agent_mem.md`. Timeline is indicative
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | LLM latency/cost unpredictable | Slow/expensive compression | Synthetic fallback (FR-11), timeouts (FR-12), cost metrics (NFR-17) |
-| Dual store (SQLite+Neo4j) consistency lag | Stale graph reads | SQLite is hot path; Neo4j async enrichment; optional Neo4j (NFR-24) |
+| Dual store (PostgreSQL+Neo4j) consistency lag | Stale graph reads | PostgreSQL is hot path; Neo4j async enrichment; optional Neo4j (NFR-24) |
 | Hook integration not adopted by agents | No capture, no value | MCP-first + sane defaults; document per-agent hook wiring |
 | RRF heuristic misses edge cases | Lower recall on some queries | Monitor recall metric; tune k; ML reranker as future extension |
 | Privacy filter misses a secret pattern | Secret leak | Layered filtering (FR-6..9), deny external enrichment for sensitive entities, test corpus of secret patterns |

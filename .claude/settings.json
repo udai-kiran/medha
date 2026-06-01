@@ -1,7 +1,4 @@
 {
-  "effortLevel": "xhigh",
-  "advisorModel": "opus",
-  "theme": "auto",
   "hooks": {
     "PostToolUse": [
       {
@@ -34,5 +31,8 @@
         ]
       }
     ]
-  }
+  },
+  "effortLevel": "xhigh",
+  "advisorModel": "opus",
+  "theme": "auto"
 }

@@ -135,7 +135,7 @@ paths:
                     status: ok
                   - name: neo4j
                     status: degraded
-                    message: "disabled (NEO4J_ENABLED=false); SQLite-only mode"
+                    message: "disabled (NEO4J_ENABLED=false); graph enrichment disabled"
 
 components:
   schemas:
@@ -259,7 +259,7 @@ components:
       properties:
         name:
           type: string
-          description: Subsystem name (api, neo4j, queue, sqlite, python, ...)
+          description: Subsystem name (api, postgres, neo4j, queue, python, ...)
         status:
           type: string
           enum: [ok, degraded, down]

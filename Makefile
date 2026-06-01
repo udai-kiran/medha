@@ -1,7 +1,7 @@
 # medha — top-level Makefile
 # Wraps Go + Python build/test/lint and Docker Compose bring-up.
 
-.PHONY: help setup build run test lint run-go run-py worker compose-up compose-down compose-light clean
+.PHONY: help setup build build-image run run-pull test lint run-go run-py worker compose-up compose-down compose-light clean
 
 GO_DIR := medha-api
 PY_DIR := medha-extraction
@@ -10,6 +10,7 @@ help:
 	@echo "medha make targets:"
 	@echo "  setup        Install Go modules and sync Python deps (via uv)"
 	@echo "  build        Build Go binaries (api, mcp, worker)"
+	@echo "  build-image  Build consolidated Docker image -> agent-mem:local"
 	@echo "  run          Start agent-mem services: Go API :3111, Python :5000, MCP :3114"
 	@echo "  test         Run Go + Python tests"
 	@echo "  lint         Run golangci-lint + ruff + mypy"
@@ -30,10 +31,19 @@ build:
 	cd $(GO_DIR) && go build -o bin/agent-mem-mcp ./cmd/mcp
 	@if [ -d "$(GO_DIR)/cmd/worker" ]; then cd $(GO_DIR) && go build -o bin/agent-mem-worker ./cmd/worker; fi
 
+## Build the consolidated Docker image locally and tag it as agent-mem:local.
+build-image:
+	docker build -t agent-mem:local .
+
 ## Start agent-mem services only — Go API, Python sidecar, MCP HTTP server.
 ## External deps (Postgres, Neo4j) must be reachable via .env / .env.mcp.
 run:
 	docker compose -f docker-compose.local.yml up --build
+
+## Pull a specific ghcr.io tag and start without building from source.
+## Usage: IMAGE_TAG=<sha> make run-pull  (sha from GitHub Actions, e.g. IMAGE_TAG=abc1234)
+run-pull:
+	IMAGE_TAG=$(IMAGE_TAG) docker compose -f docker-compose.local.yml up --no-build
 
 test:
 	cd $(GO_DIR) && go test ./... -race -cover

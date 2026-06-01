@@ -11,9 +11,9 @@ Persistent, long-term memory for AI coding agents — hybrid Go + Python.
 
 | Component       | Tech                              |
 |-----------------|-----------------------------------|
-| API service     | Go 1.26.3, Chi router, SQLite     |
+| API service     | Go 1.26.3, Chi router, PostgreSQL |
 | Extraction svc  | Python 3.14.5, FastAPI, spaCy/GLiNER |
-| State           | SQLite (always) + Neo4j (optional, ADR-0003) |
+| State           | PostgreSQL + Neo4j (optional, ADR-0003) |
 | Async           | RabbitMQ (prod) or in-memory (dev) — ADR-0001 |
 | Entrypoints     | REST `/agentmemory/*`, MCP stdio + HTTP proxy |
 
@@ -63,7 +63,7 @@ make worker   # async job consumer (appears in Task 12)
 ```
 .
 ├── medha-api/                   # Go service (cmd/api, cmd/worker, internal/*)
-├── medha-extraction/                   # Python service (agent_mem/*, tests/)
+├── medha-extraction/            # Python service (medha/*, tests/)
 ├── docs/
 │   ├── ADRs/             # Architecture Decision Records
 │   └── api/openapi.yaml  # REST API contract (grown per task)
@@ -81,7 +81,7 @@ make worker   # async job consumer (appears in Task 12)
 All 35 implementation tasks (M0 → M6) are complete:
 
 - **M0** scaffolding (toolchain, skeletons, Docker Compose, CI).
-- **M1** capture pipeline (observe → privacy filter → dedup → SQLite).
+- **M1** capture pipeline (observe → privacy filter → dedup → PostgreSQL).
 - **M2** compression + hybrid search (BM25 + vector + graph fused via RRF).
 - **M3** consolidation + Ebbinghaus decay (4-tier memory model, nightly job).
 - **M4** REST API surface + MCP server (stdio + HTTP proxy) + optional Neo4j.

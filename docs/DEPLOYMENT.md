@@ -6,8 +6,8 @@ Three modes are supported. Pick the smallest that meets the requirement.
 
 | Shape | Persistence | External services | When to pick |
 |-------|-------------|-------------------|--------------|
-| **Lightweight (NFR-24)** | SQLite | None (or just Python) | Solo dev, CI sandbox, hobby use. |
-| **Full** | SQLite + Neo4j | RabbitMQ, Neo4j, Python | Team, project memory, multi-agent orchestration. |
+| **Lightweight (NFR-24)** | PostgreSQL | PostgreSQL, Python | Solo dev, CI sandbox, hobby use. |
+| **Full** | PostgreSQL + Neo4j | PostgreSQL, RabbitMQ, Neo4j, Python | Team, project memory, multi-agent orchestration. |
 | **Kubernetes** | Same as Full | Add k8s manifests | Self-host at scale. |
 
 ADR-0003 governs Neo4j optionality; ADR-0001 governs queue backend.
@@ -16,7 +16,7 @@ ADR-0003 governs Neo4j optionality; ADR-0001 governs queue backend.
 
 ```bash
 cp .env.example .env
-docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml up -d --build
+docker compose --profile postgres -f docker-compose.yml -f deploy/docker-compose.lightweight.yml up -d --build
 curl http://localhost:3111/agentmemory/health
 ```
 
@@ -24,7 +24,7 @@ What you get:
 - Go API on `:3111` (REST + MCP-over-HTTP at `/agentmemory/mcp`).
 - Viewer on `:3113`.
 - Python sidecar on `:5000`.
-- SQLite at `/data` volume; no Neo4j.
+- PostgreSQL in the `postgres_data` volume; no Neo4j.
 
 The Go service reports `degraded` on `/health` because Neo4j is disabled —
 this is expected and explicitly handled per ADR-0003.
@@ -33,11 +33,12 @@ this is expected and explicitly handled per ADR-0003.
 
 ```bash
 cp .env.example .env       # then edit: AGENTMEMORY_SECRET, NEO4J_PASSWORD, *_API_KEY
-docker compose up -d --build
+docker compose --profile postgres --profile neo4j up -d --build
 ```
 
-Adds Neo4j (`:7687`) and RabbitMQ (`:5672`). Healthchecks gate startup;
-`docker compose ps` should show all `(healthy)` within a minute.
+Adds embedded PostgreSQL (`:5432`), Neo4j (`:7687`), and RabbitMQ (`:5672`).
+Healthchecks gate startup; `docker compose ps` should show all `(healthy)`
+within a minute.
 
 ### Production overrides
 
@@ -71,19 +72,20 @@ docker exec agent-mem-go /app/agent-mem-api -backup /backups/$(date +%Y%m%d).db
 # (CLI flag — wire in main.go before relying on this)
 ```
 
-For now, snapshot the SQLite file directly:
+For now, snapshot PostgreSQL directly:
 
 ```bash
-docker exec agent-mem-go sh -c 'sqlite3 /data/agentmemory.db ".backup /tmp/snap.db"'
-docker cp agent-mem-go:/tmp/snap.db ./backups/
+docker exec medha-postgres pg_dump -U medha -d medha -Fc -f /tmp/medha.dump
+docker cp medha-postgres:/tmp/medha.dump ./backups/
 ```
 
 ### Restore
 
 ```bash
 docker compose down
-docker run --rm -v sqlite_data:/data -v $(pwd)/backups:/in alpine \
-  cp /in/snap.db /data/agentmemory.db
+docker compose --profile postgres up -d postgres
+docker cp ./backups/medha.dump medha-postgres:/tmp/medha.dump
+docker exec medha-postgres pg_restore -U medha -d medha --clean --if-exists /tmp/medha.dump
 docker compose up -d
 ```
 

@@ -139,7 +139,7 @@ The MCP server uses **Streamable HTTP transport** (MCP spec 2025-06-18) on port 
 
 ```bash
 # Run via Docker (recommended)
-docker run -d -p 3114:3114 --env-file .env.mcp ghcr.io/udai-kiran/agent-mem-mcp:latest
+docker run -d -p 3114:3114 --env-file .env.mcp ghcr.io/udai-kiran/agent-mem:latest mcp
 
 # Configure Claude Code
 claude mcp add agent-mem --transport http http://localhost:3114/mcp

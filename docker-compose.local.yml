@@ -1,14 +1,17 @@
 # Local / production-like stack — agent-mem services only.
 # All external services (PostgreSQL, Neo4j, RabbitMQ) are reached via .env.
 #
-# Usage: make run
-#   Starts: go (API :3111), py (Python :5000), mcp (MCP HTTP :3114)
+# Usage:
+#   make run                          # build from source (default)
+#   IMAGE_TAG=<sha> make run-pull     # pull a specific ghcr.io tag
 
 services:
   py:
+    image: ghcr.io/udai-kiran/agent-mem:${IMAGE_TAG:-local}
     build:
-      context: ./medha-extraction
-    image: medha-extraction:local
+      context: .
+      dockerfile: Dockerfile
+    command: py
     container_name: medha-extraction
     restart: unless-stopped
     ports:
@@ -23,20 +26,26 @@ services:
     networks: [agentmem]
 
   go:
+    image: ghcr.io/udai-kiran/agent-mem:${IMAGE_TAG:-local}
     build:
-      context: ./medha-api
-    image: medha-api:local
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    command: api
     container_name: medha-api
     restart: unless-stopped
     ports:
       - "3111:3111"
       - "3113:3113"
     env_file: .env
+    environment:
+      PYTHON_SERVICE_URL: http://py:5000
     depends_on:
       py:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/app/agent-mem-api", "-healthcheck"]
+      test: ["CMD", "/app/bin/agent-mem-api", "-healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -44,10 +53,13 @@ services:
     networks: [agentmem]
 
   mcp:
+    image: ghcr.io/udai-kiran/agent-mem:${IMAGE_TAG:-local}
     build:
-      context: ./medha-api
-      dockerfile: Dockerfile.mcp
-    image: agent-mem-mcp:local
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    command: mcp
     container_name: agent-mem-mcp
     restart: unless-stopped
     ports:
