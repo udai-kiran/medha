@@ -1,8 +1,8 @@
 """Runtime settings for the Python service.
 
-All values come from environment variables. BIFROST_URL is required — the
-service will not start without it. All other LLM options are model names only;
-the gateway is always Bifrost.
+All values come from environment variables. BIFROST_URL is optional at startup
+— if unset, all LLM/embedding stages fall back to their synthetic paths.
+Set it (along with LLM_MODEL / EMBEDDING_MODEL) to enable live LLM calls.
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ class Settings(BaseSettings):
     port: int = Field(default=5000, alias="PY_PORT")
     log_level: str = Field(default="info", alias="PY_LOG_LEVEL")
 
-    # Bifrost gateway — required
-    bifrost_url: str = Field(alias="BIFROST_URL")
+    # Bifrost gateway — optional; empty string disables live LLM/embed calls
+    bifrost_url: str = Field(default="", alias="BIFROST_URL")
     bifrost_api_key: str = Field(default="", alias="BIFROST_API_KEY")
 
     # LLM models (per-stage overrides fall back to llm_model)
@@ -73,4 +73,4 @@ def get_settings() -> Settings:
     Returned non-cached so tests can monkeypatch env vars between calls. Production
     callers typically grab one instance in the FastAPI lifespan handler and reuse it.
     """
-    return Settings()  # type: ignore[call-arg]
+    return Settings()

@@ -24,7 +24,7 @@ jobs:
       - name: "Compose up (lightweight: no Neo4j)"
         run: |
           cp .env.example .env
-          docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml up -d --build
+          docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml --profile postgres up -d --build
 
       - name: Wait for Python health
         run: |
@@ -57,4 +57,4 @@ jobs:
 
       - name: Compose down
         if: always()
-        run: docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml down -v
+        run: docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml --profile postgres down -v

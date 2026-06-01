@@ -49,8 +49,11 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    # Note: When using --profile postgres, this will also wait for postgres service.
-    # When using external PostgreSQL, ensure DB is running before starting this service.
+      postgres:
+        condition: service_healthy
+        required: false
+    # When using --profile postgres, the go service waits for postgres to be healthy.
+    # When using external PostgreSQL, ensure the DB is running before starting this service.
     healthcheck:
       # Self-probe via the binary's -healthcheck flag (no shell needed in distroless).
       test: ["CMD", "/app/agent-mem-api", "-healthcheck"]
