@@ -11,7 +11,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -45,7 +45,7 @@ class EnrichmentCache:
         value_json, fetched_at = row
         if time.time() - fetched_at > self.ttl_seconds:
             return None
-        return json.loads(value_json)
+        return cast(dict[str, Any], json.loads(value_json))
 
     def put(self, key: str, value: dict[str, Any]) -> None:
         self._conn.execute(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import structlog
@@ -45,7 +46,7 @@ class OpenAIEmbedder:
                 json={"model": self.model, "input": texts},
             )
             resp.raise_for_status()
-            data: dict = resp.json()
+            data: dict[str, Any] = resp.json()
 
         vectors = [
             item["embedding"]

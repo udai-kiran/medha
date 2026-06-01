@@ -22,7 +22,7 @@ jobs:
       run:
         working-directory: ./medha-api
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Go 1.26.3
         uses: actions/setup-go@v5
@@ -55,7 +55,7 @@ jobs:
           # Warn (don't fail) below 70% during M0; tighten in Task 34.
           awk -v p="$PCT" 'BEGIN{ if (p+0 < 70) print "::warning::go coverage " p "% < 70%" }'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: go-coverage

@@ -23,8 +23,9 @@ from dataclasses import dataclass
 
 from medha.extraction.heuristic_extractor import HeuristicExtractor
 from medha.models import Relationship
+from medha.models.relationship import RelationshipType
 
-_VERB_TO_TYPE: dict[str, str] = {
+_VERB_TO_TYPE: dict[str, RelationshipType] = {
     "depends on": "DEPENDS_ON",
     "imports": "DEPENDS_ON",
     "uses": "DEPENDS_ON",
@@ -48,7 +49,7 @@ _VERB_TO_TYPE: dict[str, str] = {
 @dataclass
 class _Pattern:
     verb: str
-    rel: str
+    rel: RelationshipType
     regex: re.Pattern[str]
 
 

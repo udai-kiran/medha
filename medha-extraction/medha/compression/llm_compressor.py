@@ -24,7 +24,7 @@ import structlog
 
 from medha.compression.synthetic_compressor import synthetic_compress
 from medha.config import Settings
-from medha.llm.client import LLMClient  # noqa: F401 — re-exported for back-compat
+from medha.llm.client import LLMClient as LLMClient  # re-exported for back-compat
 from medha.models import CompressedObservation, RawObservation
 from medha.utils.validators import clip
 

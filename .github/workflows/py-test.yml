@@ -22,17 +22,15 @@ jobs:
       run:
         working-directory: ./medha-extraction
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python 3.14.5
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.14.5"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "0.5.6"
+        uses: astral-sh/setup-uv@v8
 
       - name: Sync deps
         run: uv sync --all-extras
@@ -51,7 +49,7 @@ jobs:
           echo "Coverage: ${PCT}%"
           if [ "$PCT" -lt 70 ]; then echo "::warning::python coverage ${PCT}% < 70%"; fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: py-coverage

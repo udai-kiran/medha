@@ -73,4 +73,4 @@ def get_settings() -> Settings:
     Returned non-cached so tests can monkeypatch env vars between calls. Production
     callers typically grab one instance in the FastAPI lifespan handler and reuse it.
     """
-    return Settings()
+    return Settings()  # type: ignore[call-arg]

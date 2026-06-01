@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import structlog
@@ -29,7 +30,7 @@ class OpenAICompatibleClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        payload: dict = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
@@ -45,6 +46,6 @@ class OpenAICompatibleClient:
                 json=payload,
             )
             resp.raise_for_status()
-            data: dict = resp.json()
+            data: dict[str, Any] = resp.json()
 
         return str(data["choices"][0]["message"]["content"])
