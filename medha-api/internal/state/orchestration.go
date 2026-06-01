@@ -375,24 +375,48 @@ func (s *Store) PromoteSketch(ctx context.Context, project, sketchID string) (*R
 }
 
 // Crystallize compacts a list of completed action IDs into a single summary action (G21).
+// Source actions are marked completed so they drop off the frontier.
 func (s *Store) Crystallize(ctx context.Context, project string, actionIDs []string) (*ActionRow, error) {
-	titles := make([]string, 0, len(actionIDs))
+	type source struct {
+		row   *ActionRow
+		title string
+	}
+	sources := make([]source, 0, len(actionIDs))
 	for _, id := range actionIDs {
 		a, err := s.GetAction(ctx, project, id)
 		if err == nil {
-			titles = append(titles, a.Title)
+			sources = append(sources, source{row: a, title: a.Title})
 		}
 	}
+
+	titles := make([]string, 0, len(sources))
+	for _, s := range sources {
+		titles = append(titles, s.title)
+	}
+
+	summaryID := newID("cryst")
 	summary := &ActionRow{
-		ID:          newID("cryst"),
+		ID:          summaryID,
 		Project:     project,
 		Title:       fmt.Sprintf("Crystallized: %d actions", len(titles)),
 		Description: strings.Join(titles, "; "),
 		Status:      "completed",
+		Metadata:    map[string]any{"sourceActionIds": actionIDs},
 	}
 	if err := s.PutAction(ctx, summary); err != nil {
 		return nil, err
 	}
+
+	// Retire source actions so they no longer appear on the frontier.
+	for _, src := range sources {
+		src.row.Status = "completed"
+		if src.row.Metadata == nil {
+			src.row.Metadata = map[string]any{}
+		}
+		src.row.Metadata["crystallizedInto"] = summaryID
+		_ = s.PutAction(ctx, src.row)
+	}
+
 	return summary, nil
 }
 

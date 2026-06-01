@@ -54,7 +54,7 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 		r.Use(deps.RateLimiter.Middleware())
 		if deps.Observe.Store != nil {
 			r.Post("/observe", ObserveHandler(deps.Observe))
-			SessionAPI{Store: deps.Observe.Store, SessionEnd: deps.Observe.SessionEnd}.Register(r)
+			SessionAPI{Store: deps.Observe.Store, SessionEnd: deps.Observe.SessionEnd, InjectContext: cfg.AgentMemoryInjectContext}.Register(r)
 			MemoryAPI{Store: deps.Observe.Store}.Register(r)
 			ObservationsAPI{Store: deps.Observe.Store}.Register(r)
 			InternalAPI{Store: deps.Observe.Store, IndexBus: deps.IndexBus}.RegisterPublic(r)

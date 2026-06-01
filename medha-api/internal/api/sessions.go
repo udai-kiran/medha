@@ -14,8 +14,9 @@ import (
 
 // SessionAPI groups handlers for /agentmemory/session* + /agentmemory/sessions.
 type SessionAPI struct {
-	Store      *state.Store
-	SessionEnd SessionEndHandler
+	Store         *state.Store
+	SessionEnd    SessionEndHandler
+	InjectContext bool
 }
 
 // Register attaches the session routes under the parent router.
@@ -33,7 +34,14 @@ type SessionStartRequest struct {
 	CWD       string `json:"cwd,omitempty"`
 }
 
-// Start ensures a session exists; returns 200 with the session.
+// sessionStartResponse extends the session row with optional pre-assembled context.
+type sessionStartResponse struct {
+	*state.SessionRow
+	InjectedContext *state.ContextResult `json:"injectedContext,omitempty"`
+}
+
+// Start ensures a session exists; returns 200 with the session (and pre-assembled
+// context when AGENTMEMORY_INJECT_CONTEXT=true).
 func (a SessionAPI) Start(w http.ResponseWriter, r *http.Request) {
 	var req SessionStartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -49,7 +57,19 @@ func (a SessionAPI) Start(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusInternalServerError, "session_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, row)
+
+	resp := &sessionStartResponse{SessionRow: row}
+	if a.InjectContext {
+		ctx, _ := a.Store.AssembleContext(r.Context(), state.ContextRequest{
+			Project:          req.Project,
+			SessionID:        req.SessionID,
+			IncludeShortTerm: true,
+			IncludeLongTerm:  true,
+			IncludeSlots:     true,
+		})
+		resp.InjectedContext = ctx
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // SessionEndRequest is the body for /session/end.

@@ -41,11 +41,12 @@ type Config struct {
 	PythonServiceURL string
 
 	// Feature flags
-	AgentMemoryAutoCompress bool
-	AgentMemorySlots        bool
-	AgentMemoryReflect      bool
-	ConsolidationEnabled    bool
-	LessonDecayEnabled      bool
+	AgentMemoryAutoCompress  bool
+	AgentMemorySlots         bool
+	AgentMemoryReflect       bool
+	AgentMemoryInjectContext bool
+	ConsolidationEnabled     bool
+	LessonDecayEnabled       bool
 
 	// Decay tuning — see ADR-0002
 	DecayRatePerDay         float64
@@ -84,10 +85,11 @@ func FromEnv() *Config {
 		QueueBackend:            getString("QUEUE_BACKEND", "memory"),
 		RabbitMQURL:             getString("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		PythonServiceURL:        getString("PYTHON_SERVICE_URL", "http://localhost:5000"),
-		AgentMemoryAutoCompress: getBool("AGENTMEMORY_AUTO_COMPRESS", false),
-		AgentMemorySlots:        getBool("AGENTMEMORY_SLOTS", false),
-		AgentMemoryReflect:      getBool("AGENTMEMORY_REFLECT", false),
-		ConsolidationEnabled:    getBool("CONSOLIDATION_ENABLED", true),
+		AgentMemoryAutoCompress:  getBool("AGENTMEMORY_AUTO_COMPRESS", false),
+		AgentMemorySlots:         getBool("AGENTMEMORY_SLOTS", false),
+		AgentMemoryReflect:       getBool("AGENTMEMORY_REFLECT", false),
+		AgentMemoryInjectContext: getBool("AGENTMEMORY_INJECT_CONTEXT", false),
+		ConsolidationEnabled:     getBool("CONSOLIDATION_ENABLED", true),
 		LessonDecayEnabled:      getBool("LESSON_DECAY_ENABLED", true),
 		DecayRatePerDay:         getFloat("DECAY_RATE_PER_DAY", 0.95),
 		DecayEvictionThreshold:  getFloat("DECAY_EVICTION_THRESHOLD", 0.10),
