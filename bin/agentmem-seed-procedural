@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# Seed procedural memories from markdown documentation files.
+#
+# Usage:
+#   agentmem-seed-procedural [file.md ...]
+#
+# With no arguments seeds from CLAUDE.md in the nearest git repo root.
+# Idempotent — purges memories tagged source:<basename> before re-inserting.
+#
+# Config (in priority order):
+#   1. AGENTMEMORY_URL / AGENTMEMORY_SECRET environment variables
+#   2. AGENTMEMORY_ENV_FILE env var pointing to a .env.mcp file
+#   3. .env.mcp found by walking up from the current working directory
+#   4. $XDG_CONFIG_HOME/agent-mem/.env.mcp  (~/.config/agent-mem/.env.mcp)
+#   5. Default URL: http://localhost:3111
+
+command -v jq      >/dev/null 2>&1 || { printf '[seed-procedural] jq required\n' >&2; exit 1; }
+command -v curl    >/dev/null 2>&1 || { printf '[seed-procedural] curl required\n' >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { printf '[seed-procedural] python3 required\n' >&2; exit 1; }
+
+CWD="$(pwd)"
+
+# Locate .env.mcp: explicit var → walk CWD → XDG config dir
+_agentmem_env_file() {
+    if [ -n "${AGENTMEMORY_ENV_FILE:-}" ] && [ -f "$AGENTMEMORY_ENV_FILE" ]; then
+        printf '%s' "$AGENTMEMORY_ENV_FILE"; return
+    fi
+    local d="$CWD"
+    while [ "$d" != "/" ]; do
+        [ -f "$d/.env.mcp" ] && { printf '%s' "$d/.env.mcp"; return; }
+        d=$(dirname "$d")
+    done
+    local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/agent-mem/.env.mcp"
+    [ -f "$cfg" ] && printf '%s' "$cfg"
+}
+
+if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ]; then
+    _ENV=$(_agentmem_env_file)
+    if [ -n "${_ENV:-}" ]; then
+        [ -z "${AGENTMEMORY_URL:-}" ]    && AGENTMEMORY_URL=$(grep    '^AGENTMEMORY_URL='    "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_SECRET:-}" ] && AGENTMEMORY_SECRET=$(grep '^AGENTMEMORY_SECRET=' "$_ENV" 2>/dev/null | cut -d= -f2-)
+    fi
+fi
+AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
+
+PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
+
+# Common auth args as an array — safe for all curl calls.
+AUTH_ARGS=()
+[ -n "${AGENTMEMORY_SECRET:-}" ] && AUTH_ARGS=(-H "Authorization: Bearer $AGENTMEMORY_SECRET")
+
+# Delete all procedural memories for this project tagged with source_tag.
+_purge_source() {
+    local source_tag="$1"
+    local resp
+    resp=$(curl -s --max-time 10 \
+        "${AUTH_ARGS[@]}" \
+        "$AGENTMEMORY_URL/agentmemory/memories?tier=procedural&project=${PROJECT}&limit=200" \
+        2>/dev/null) || return 0
+
+    local ids
+    ids=$(printf '%s' "$resp" | jq -r --arg tag "$source_tag" \
+        '.memories[]? | select(.Concepts != null and (.Concepts | index($tag) != null)) | .ID' \
+        2>/dev/null) || return 0
+
+    local id
+    for id in $ids; do
+        local body
+        body=$(jq -cn --arg id "$id" \
+            '{memoryId:$id, actor:"seed-procedural", reason:"re-seed from source file"}')
+        curl -s -o /dev/null --max-time 10 \
+            "${AUTH_ARGS[@]}" \
+            -X POST "$AGENTMEMORY_URL/agentmemory/forget" \
+            -H "Content-Type: application/json" \
+            -d "$body" 2>/dev/null
+        printf '[seed-procedural] purged %s (%s)\n' "$id" "$source_tag" >&2
+    done
+}
+
+# Parse a markdown file into sections; prints a JSON array.
+# Each element: {title, content, type}
+_parse_md() {
+    python3 - "$1" <<'PYEOF'
+import sys, re, json
+
+file = sys.argv[1]
+try:
+    text = open(file, encoding='utf-8', errors='replace').read()
+except OSError as e:
+    print(json.dumps([]))
+    sys.exit(0)
+
+# Split on level-2 headings (## ...). Level-3+ are kept inside their parent section.
+parts = re.split(r'\n(?=## )', '\n' + text)
+out = []
+for part in parts:
+    part = part.strip()
+    if not part.startswith('## '):
+        continue
+    first_newline = part.find('\n')
+    if first_newline == -1:
+        continue
+    title = part[3:first_newline].strip()
+    content = part[first_newline + 1:].strip()
+    if not title or len(content) < 30:
+        continue
+    # Infer memory type from section title keywords
+    tl = title.lower()
+    if any(k in tl for k in ('architecture', 'adr', 'design', 'internals', 'overview')):
+        mtype = 'architecture'
+    else:
+        mtype = 'workflow'
+    # Cap content to avoid oversized payloads
+    if len(content) > 4000:
+        content = content[:4000] + '\n[truncated]'
+    out.append({'title': title, 'content': content, 'type': mtype})
+
+print(json.dumps(out))
+PYEOF
+}
+
+# POST one memory. Args: title content type source_tag
+_remember() {
+    local title="$1" content="$2" mtype="$3" source_tag="$4"
+    local body
+    body=$(jq -cn \
+        --arg project    "$PROJECT"    \
+        --arg type       "$mtype"      \
+        --arg title      "$title"      \
+        --arg content    "$content"    \
+        --arg source_tag "$source_tag" \
+        '{
+            project:  $project,
+            type:     $type,
+            tier:     "procedural",
+            title:    $title,
+            content:  $content,
+            strength: 1.0,
+            concepts: ["procedural", $source_tag]
+        }')
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+        "${AUTH_ARGS[@]}" \
+        -X POST "$AGENTMEMORY_URL/agentmemory/remember" \
+        -H "Content-Type: application/json" \
+        -d "$body" 2>/dev/null)
+    if [ "$code" = "201" ]; then
+        printf '[seed-procedural] stored "%s"\n' "$title" >&2
+    else
+        printf '[seed-procedural] WARN: remember returned %s for "%s"\n' "$code" "$title" >&2
+    fi
+}
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+if [ $# -gt 0 ]; then
+    FILES=("$@")
+else
+    REPO_ROOT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null || echo "$CWD")
+    FILES=("$REPO_ROOT/CLAUDE.md")
+fi
+
+for FILE in "${FILES[@]}"; do
+    if [ ! -f "$FILE" ]; then
+        printf '[seed-procedural] SKIP: %s not found\n' "$FILE" >&2
+        continue
+    fi
+
+    BASENAME=$(basename "$FILE")
+    SOURCE_TAG="source:$BASENAME"
+
+    printf '[seed-procedural] seeding from %s (project: %s)\n' "$BASENAME" "$PROJECT" >&2
+
+    _purge_source "$SOURCE_TAG"
+
+    SECTIONS=$(_parse_md "$FILE") || {
+        printf '[seed-procedural] WARN: parse failed for %s\n' "$FILE" >&2
+        continue
+    }
+
+    COUNT=$(printf '%s' "$SECTIONS" | jq 'length' 2>/dev/null || echo 0)
+    if [ "$COUNT" -eq 0 ]; then
+        printf '[seed-procedural] no sections found in %s\n' "$FILE" >&2
+        continue
+    fi
+
+    for i in $(seq 0 $((COUNT - 1))); do
+        TITLE=$(printf '%s' "$SECTIONS"   | jq -r ".[$i].title")
+        CONTENT=$(printf '%s' "$SECTIONS" | jq -r ".[$i].content")
+        MTYPE=$(printf '%s' "$SECTIONS"   | jq -r ".[$i].type")
+        _remember "$TITLE" "$CONTENT" "$MTYPE" "$SOURCE_TAG"
+    done
+
+    printf '[seed-procedural] done — %s sections from %s\n' "$COUNT" "$BASENAME" >&2
+done

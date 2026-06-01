@@ -137,7 +137,7 @@ func (a MemoryAPI) Forget(w http.ResponseWriter, r *http.Request) {
 	// Audit first; then delete.
 	if _, err := a.Store.DB.ExecContext(r.Context(),
 		`INSERT INTO audit_log (timestamp, actor, action, target_type, target_id, payload_json)
-         VALUES (datetime('now'), ?, 'delete', 'memory', ?, ?)`,
+         VALUES (NOW(), $1, 'delete', 'memory', $2, $3)`,
 		req.Actor, req.MemoryID, string(payload),
 	); err != nil {
 		WriteError(w, http.StatusInternalServerError, "audit_failed", err.Error())

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# PostToolUse hook — when the agent writes or edits a markdown file, triggers
+# procedural memory seeding for that file in the background.
+# Exits 0 immediately so it never blocks the harness.
+#
+# Install (Claude Code):
+#   In .claude/settings.json → hooks → PostToolUse, add a matcher for
+#   "Edit|Write" and set command to the path of this script.
+
+command -v jq >/dev/null 2>&1 || exit 0
+
+INPUT=$(cat)
+printf '%s' "$INPUT" | jq empty 2>/dev/null || exit 0
+
+TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
+case "$TOOL" in
+    Write|Edit) ;;
+    *) exit 0 ;;
+esac
+
+FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')
+[ -z "$FILE_PATH" ] && exit 0
+
+# Only care about markdown files
+case "$FILE_PATH" in
+    *.md|*.MD) ;;
+    *) exit 0 ;;
+esac
+
+# Find the seed script: next to this hook, or in PATH
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SEED_SCRIPT="$SCRIPT_DIR/agentmem-seed-procedural"
+if [ ! -x "$SEED_SCRIPT" ]; then
+    SEED_SCRIPT=$(command -v agentmem-seed-procedural 2>/dev/null || true)
+fi
+[ -x "$SEED_SCRIPT" ] || exit 0
+
+printf '[md-procedural-hook] scheduling procedural sync for %s\n' "$FILE_PATH" >&2
+
+"$SEED_SCRIPT" "$FILE_PATH" &
+disown
+exit 0

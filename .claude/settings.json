@@ -19,6 +19,15 @@
             "command": "/home/udai/work/my-agent-memory/.claude/hooks/observe-tool.sh"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/bin/agentmem-md-procedural-hook"
+          }
+        ]
       }
     ],
     "Notification": [

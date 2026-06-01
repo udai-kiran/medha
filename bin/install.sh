@@ -34,7 +34,7 @@ command -v jq >/dev/null 2>&1 || die "jq is required but not found"
 info "Installing hooks → $HOOKS_DST"
 mkdir -p "$HOOKS_DST"
 
-for hook in agentmem-tool-hook agentmem-session-end-hook agentmem-notify-hook; do
+for hook in agentmem-tool-hook agentmem-session-end-hook agentmem-notify-hook agentmem-md-procedural-hook agentmem-seed-procedural; do
     src="$HOOKS_SRC/$hook"
     dst="$HOOKS_DST/$hook"
     [ -f "$src" ] || die "Hook not found: $src"
@@ -63,12 +63,14 @@ mkdir -p "$TARGET/.claude"
 TOOL_HOOK="$HOOKS_DST/agentmem-tool-hook"
 NOTIFY_HOOK="$HOOKS_DST/agentmem-notify-hook"
 END_HOOK="$HOOKS_DST/agentmem-session-end-hook"
+MD_HOOK="$HOOKS_DST/agentmem-md-procedural-hook"
 
 if [ -f "$SETTINGS" ]; then
     MERGED=$(jq \
       --arg tool   "$TOOL_HOOK"   \
       --arg notify "$NOTIFY_HOOK" \
       --arg end    "$END_HOOK"    \
+      --arg md     "$MD_HOOK"     \
       '
       def add_hook(event; entry; cmd):
         if .hooks[event] == null then
@@ -84,6 +86,10 @@ if [ -f "$SETTINGS" ]; then
         { matcher: "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
           hooks: [{ type: "command", command: $tool }] };
         $tool) |
+      add_hook("PostToolUse";
+        { matcher: "Edit|Write",
+          hooks: [{ type: "command", command: $md }] };
+        $md) |
       add_hook("Notification";
         { hooks: [{ type: "command", command: $notify }] };
         $notify) |
@@ -97,11 +103,14 @@ else
       --arg tool   "$TOOL_HOOK"   \
       --arg notify "$NOTIFY_HOOK" \
       --arg end    "$END_HOOK"    \
+      --arg md     "$MD_HOOK"     \
       '{
         hooks: {
           PostToolUse: [
             { matcher: "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
-              hooks: [{ type: "command", command: $tool }] }
+              hooks: [{ type: "command", command: $tool }] },
+            { matcher: "Edit|Write",
+              hooks: [{ type: "command", command: $md }] }
           ],
           Notification: [
             { hooks: [{ type: "command", command: $notify }] }
