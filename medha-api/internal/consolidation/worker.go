@@ -191,28 +191,6 @@ func buildRawText(obs *state.ObservationRow) string {
 	return obs.HookType
 }
 
-func (w *Worker) pingPython(ctx context.Context) error {
-	u, err := url.Parse(w.cfg.PythonServiceURL)
-	if err != nil {
-		return err
-	}
-	u.Path = "/health"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	resp, err := w.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("python health: %d", resp.StatusCode)
-	}
-	return nil
-}
-
 // PostCompressed is the helper Task 13 uses to write the compressed result
 // back to Go. Exposed here so the worker package owns its inter-service
 // HTTP. Currently unused but kept for the Task 13 wiring.
