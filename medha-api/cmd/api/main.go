@@ -118,7 +118,7 @@ func main() {
 		},
 	}
 
-	// Neo4j: optional. Health reports degraded if disabled or unreachable.
+	// Neo4j: optional. Health reports degraded if disabled or unreachable (ADR-0003).
 	var neo4jStore *graph.Store
 	if cfg.Neo4jEnabled {
 		gs, err := graph.Open(rootCtx, graph.Config{
@@ -135,7 +135,6 @@ func main() {
 			defer func() { _ = neo4jStore.Close(context.Background()) }()
 		}
 	}
-	_ = neo4jStore // wired into Task 30 enrichment + health probe
 
 	// Consolidation pipeline: SessionEnd → summarise → distil → persist.
 	consolPipeline := consolidation.NewPipeline(store, cfg.PythonServiceURL, logger)
@@ -172,6 +171,12 @@ func main() {
 	// Wire the same index bus into the consolidation pipeline so that
 	// memories created during session-end are searchable via smart-search.
 	consolPipeline.Indexer = indexBus
+	// Wire the graph index so session-end entity extraction populates the
+	// PostgreSQL graph (and optionally mirrors to Neo4j).
+	consolPipeline.Graph = graphIdx
+	if neo4jStore != nil {
+		consolPipeline.Neo4j = neo4jStore
+	}
 
 	// Real-time viewer hub (Task 28). The capture path broadcasts observations
 	// here; the WebSocket dashboard fans them out to subscribed clients.
@@ -191,6 +196,18 @@ func main() {
 		return mcpSDKServer
 	}, &sdkmcp.StreamableHTTPOptions{Stateless: true})
 
+	// Build optional health probes. Neo4j probe is added only when the store
+	// is actually open (NEO4J_ENABLED=true and dial succeeded).
+	var healthProbes []func() api.ComponentStatus
+	if neo4jStore != nil {
+		healthProbes = append(healthProbes, func() api.ComponentStatus {
+			if err := neo4jStore.Health(context.Background()); err != nil {
+				return api.ComponentStatus{Name: "neo4j", Status: "down", Message: err.Error()}
+			}
+			return api.ComponentStatus{Name: "neo4j", Status: "ok"}
+		})
+	}
+
 	router := api.NewRouter(cfg, api.RouterDeps{
 		Observe: api.ObserveDeps{
 			Store:       store,
@@ -201,10 +218,11 @@ func main() {
 		},
 		Search:      api.SearchDeps{Hybrid: hybrid, Store: store},
 		IndexBus:    indexBus,
-		MCP:         mcpHandler,
-		Metrics:     metrics,
-		AuthSecret:  cfg.AgentMemorySecret,
-		RateLimiter: api.NewRateLimiter(120, time.Minute), // 120 req/min/client
+		MCP:          mcpHandler,
+		Metrics:      metrics,
+		AuthSecret:   cfg.AgentMemorySecret,
+		RateLimiter:  api.NewRateLimiter(120, time.Minute), // 120 req/min/client
+		HealthProbes: healthProbes,
 	})
 
 	apiSrv := &http.Server{

@@ -24,6 +24,7 @@ type RouterDeps struct {
 	AuthSecret    string             // Task 33 — Bearer token; empty disables auth
 	RateLimiter   *RateLimiter       // Task 33 — nil disables rate limiting
 	PythonBaseURL string             // G29 — for vision embedding proxy
+	HealthProbes  []func() ComponentStatus // optional extra component health probes
 }
 
 // NewRouter builds the API router. Keep this function free of business
@@ -38,8 +39,8 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 	r.Use(requestLog)
 
 	// Infra routes (no /agentmemory prefix so generic probes find them).
-	r.Get("/health", Health(cfg))
-	r.Get("/agentmemory/health", Health(cfg))
+	r.Get("/health", Health(cfg, deps.HealthProbes...))
+	r.Get("/agentmemory/health", Health(cfg, deps.HealthProbes...))
 	if deps.Metrics != nil {
 		r.Method(http.MethodGet, "/metrics", deps.Metrics.Handler())
 	}

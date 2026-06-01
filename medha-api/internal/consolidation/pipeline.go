@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/udai-kiran/medha/internal/graph"
+	"github.com/udai-kiran/medha/internal/search"
 	"github.com/udai-kiran/medha/internal/state"
 )
 
@@ -21,7 +23,7 @@ import (
 //
 //	1. Fetch CompressedObservation rows for the session.
 //	2. POST /summarize on Python → SessionSummary.
-//	3. POST /extract on each observation → entities + relationships.
+//	3. POST /extract on each observation → entities + relationships → persist to graph.
 //	4. Persist SessionSummary, link observations to entities, build edges,
 //	   distil memories.
 //
@@ -35,14 +37,20 @@ type MemoryIndexer interface {
 }
 
 type Pipeline struct {
-	Store               *state.Store
-	PythonServiceURL    string
-	HTTPClient          *http.Client
-	Logger              *slog.Logger
-	StepTimeout         time.Duration
+	Store            *state.Store
+	PythonServiceURL string
+	HTTPClient       *http.Client
+	Logger           *slog.Logger
+	StepTimeout      time.Duration
 	// Indexer, if non-nil, is called after each memory is persisted so that
 	// consolidated memories are discoverable via smart-search.
 	Indexer MemoryIndexer
+	// Graph, if non-nil, receives extracted entities and relationships
+	// (PostgreSQL-backed). Set after construction like Indexer.
+	Graph *search.GraphIndex
+	// Neo4j, if non-nil, mirrors entity writes from Graph best-effort.
+	// Nil when NEO4J_ENABLED=false (ADR-0003).
+	Neo4j *graph.Store
 }
 
 // NewPipeline wires a Pipeline with reasonable defaults.
@@ -121,13 +129,179 @@ func (p *Pipeline) Run(ctx context.Context, sessionID string) (memCount int, err
 		}
 	}
 
-	// Step 4: mark the session completed (idempotent).
+	// Step 4: extract entities + relationships from each observation and
+	// persist to the PostgreSQL graph (and optionally Neo4j). Best-effort.
+	if p.Graph != nil {
+		p.extractAndPersistEntities(ctx, obs, summary.SessionID, log)
+	}
+
+	// Step 5: mark the session completed (idempotent).
 	if err := p.Store.MarkSessionEnded(ctx, sessionID); err != nil {
 		log.Warn("consolidation.mark_ended", "err", err)
 	}
 
 	log.Info("consolidation.done", "memories_persisted", memCount, "observations_processed", len(obs))
 	return memCount, nil
+}
+
+// extractedEntity matches the Python /extract response entity shape.
+type extractedEntity struct {
+	Name                 string   `json:"name"`
+	Type                 string   `json:"type"`
+	Subtype              string   `json:"subtype,omitempty"`
+	Confidence           float64  `json:"confidence"`
+	SourceObservationIDs []string `json:"sourceObservationIds"`
+}
+
+// extractedRelationship matches the Python /extract response relationship shape.
+type extractedRelationship struct {
+	Source              string  `json:"source"`
+	Target              string  `json:"target"`
+	Type                string  `json:"type"`
+	Confidence          float64 `json:"confidence"`
+	SourceObservationID string  `json:"sourceObservationId,omitempty"`
+}
+
+type extractResponse struct {
+	Entities      []extractedEntity      `json:"entities"`
+	Relationships []extractedRelationship `json:"relationships"`
+}
+
+// callExtract sends narrative text to Python /extract and returns typed entities
+// and relationships. Returns empty result (no error) when Python is unreachable.
+func (p *Pipeline) callExtract(ctx context.Context, text, observationID string) (*extractResponse, error) {
+	if text == "" {
+		return &extractResponse{}, nil
+	}
+	body, _ := json.Marshal(map[string]string{
+		"text":                  text,
+		"source_observation_id": observationID,
+	})
+	url := strings.TrimRight(p.PythonServiceURL, "/") + "/extract"
+	reqCtx, cancel := context.WithTimeout(ctx, p.StepTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("extract: status %d: %s", resp.StatusCode, raw)
+	}
+	var out extractResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// entityKey uniquely identifies an entity within a project for ID lookup.
+type entityKey struct{ project, name, typ string }
+
+// extractAndPersistEntities calls /extract per observation and writes the
+// resulting entities and relationships to both the PostgreSQL graph and (if
+// configured) the Neo4j mirror. The entire step is best-effort: any error is
+// logged and the loop continues.
+func (p *Pipeline) extractAndPersistEntities(ctx context.Context, obs []*state.ObservationRow, sessionID string, log *slog.Logger) {
+	// idMap maps (project+name+type) → PostgreSQL entity ID so we can
+	// resolve relationship endpoints across observations.
+	idMap := make(map[entityKey]string)
+
+	for _, o := range obs {
+		text := o.Narrative
+		if text == "" {
+			text = o.Title
+		}
+		result, err := p.callExtract(ctx, text, o.ID)
+		if err != nil {
+			log.Warn("consolidation.extract_failed", "obs", o.ID, "err", err)
+			continue
+		}
+		log.Debug("consolidation.extract", "obs", o.ID, "entities", len(result.Entities), "relationships", len(result.Relationships))
+
+		for _, e := range result.Entities {
+			if e.Name == "" || e.Type == "" {
+				continue
+			}
+			pgEnt, err := p.Graph.UpsertEntity(ctx, o.Project, e.Name, e.Type, e.Subtype, e.Confidence)
+			if err != nil {
+				log.Warn("consolidation.upsert_entity_failed", "name", e.Name, "err", err)
+				continue
+			}
+			key := entityKey{o.Project, strings.ToLower(e.Name), e.Type}
+			idMap[key] = pgEnt.ID
+
+			if linkErr := p.Graph.LinkObservationToEntity(ctx, o.ID, pgEnt.ID); linkErr != nil {
+				log.Warn("consolidation.link_entity_failed", "obs", o.ID, "entity", pgEnt.ID, "err", linkErr)
+			}
+
+			// Mirror to Neo4j best-effort — use same Postgres-assigned ID so
+			// edges connect correctly in both stores (ADR-0003).
+			if p.Neo4j != nil {
+				if mirrorErr := p.Neo4j.UpsertEntity(ctx, graph.Entity{
+					ID:         pgEnt.ID,
+					Project:    o.Project,
+					Name:       e.Name,
+					Type:       e.Type,
+					Subtype:    e.Subtype,
+					Confidence: e.Confidence,
+				}); mirrorErr != nil {
+					log.Warn("consolidation.neo4j_upsert_failed", "entity", pgEnt.ID, "err", mirrorErr)
+				}
+			}
+		}
+
+		for _, rel := range result.Relationships {
+			srcKey := entityKey{o.Project, strings.ToLower(rel.Source), ""}
+			tgtKey := entityKey{o.Project, strings.ToLower(rel.Target), ""}
+			srcID := findEntityID(idMap, srcKey)
+			tgtID := findEntityID(idMap, tgtKey)
+			if srcID == "" || tgtID == "" {
+				continue
+			}
+			if err := p.Graph.AddEdge(ctx, o.Project, search.Edge{
+				SourceID:            srcID,
+				TargetID:            tgtID,
+				Type:                rel.Type,
+				Confidence:          rel.Confidence,
+				SourceObservationID: o.ID,
+			}); err != nil {
+				log.Warn("consolidation.add_edge_failed", "src", rel.Source, "tgt", rel.Target, "err", err)
+				continue
+			}
+			if p.Neo4j != nil {
+				if mirrorErr := p.Neo4j.AddEdge(ctx, graph.Edge{
+					SourceID:            srcID,
+					TargetID:            tgtID,
+					Type:                rel.Type,
+					Confidence:          rel.Confidence,
+					SourceObservationID: o.ID,
+				}); mirrorErr != nil {
+					log.Warn("consolidation.neo4j_edge_failed", "src", srcID, "tgt", tgtID, "err", mirrorErr)
+				}
+			}
+		}
+	}
+}
+
+// findEntityID looks up an entity by project+name, ignoring type (used for
+// relationship resolution where the extracted type may not match exactly).
+func findEntityID(m map[entityKey]string, key entityKey) string {
+	if id, ok := m[key]; ok {
+		return id
+	}
+	for k, id := range m {
+		if k.project == key.project && k.name == key.name {
+			return id
+		}
+	}
+	return ""
 }
 
 // fetchObservations returns every compressed observation for the session,
