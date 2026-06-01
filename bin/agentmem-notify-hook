@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# Notification hook — captures Claude Code notifications (including compaction
-# summaries) as agent-mem observations. When Claude compacts the context it
-# emits a notification with the generated summary, which this hook persists
-# before the conversation window is cleared.
+# Notification hook — persists Claude Code notifications (including compaction
+# summaries) as agent-mem observations before the context window is cleared.
+#
+# Install (Claude Code):
+#   In .claude/settings.json → hooks → Notification, set command to the path
+#   of this script (or symlink it into .claude/hooks/).
+#
+# Config (in priority order):
+#   1. AGENTMEMORY_URL / AGENTMEMORY_SECRET environment variables
+#   2. AGENTMEMORY_ENV_FILE env var pointing to a .env.mcp file
+#   3. .env.mcp found by walking up from the current working directory
+#   4. $XDG_CONFIG_HOME/agent-mem/.env.mcp  (~/.config/agent-mem/.env.mcp)
+#   5. Default URL: http://localhost:3111
 
-command -v jq >/dev/null 2>&1 || exit 0
+command -v jq   >/dev/null 2>&1 || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
 INPUT=$(cat)
 printf '%s' "$INPUT" | jq empty 2>/dev/null || exit 0
-
 SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
 [ -z "$SESSION_ID" ] && exit 0
 
 CWD="$(pwd)"
 
+# Locate .env.mcp: explicit var → walk CWD → XDG config dir
 _agentmem_env_file() {
     if [ -n "${AGENTMEMORY_ENV_FILE:-}" ] && [ -f "$AGENTMEMORY_ENV_FILE" ]; then
         printf '%s' "$AGENTMEMORY_ENV_FILE"; return
@@ -36,14 +45,15 @@ if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ]; then
     fi
 fi
 AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
+
 PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
 _BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)
 PROJECT="${PROJECT}${_BRANCH:+/$_BRANCH}"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 PAYLOAD=$(printf '%s' "$INPUT" | jq -c \
-  --arg ts "$TS" \
-  --arg cwd "$CWD" \
+  --arg ts      "$TS"      \
+  --arg cwd     "$CWD"     \
   --arg project "$PROJECT" \
   '{
     hookType: "notification",

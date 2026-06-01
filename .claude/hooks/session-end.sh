@@ -11,15 +11,32 @@ printf '%s' "$INPUT" | jq empty 2>/dev/null || exit 0
 SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
 [ -z "$SESSION_ID" ] && exit 0
 
-AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
-
-if [ -z "${AGENTMEMORY_SECRET:-}" ]; then
-    ENV_FILE="$(cd "$(dirname "$0")/.." && pwd)/../.env.mcp"
-    [ -f "$ENV_FILE" ] && AGENTMEMORY_SECRET=$(grep '^AGENTMEMORY_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)
-fi
-
 CWD="$(pwd)"
+
+_agentmem_env_file() {
+    if [ -n "${AGENTMEMORY_ENV_FILE:-}" ] && [ -f "$AGENTMEMORY_ENV_FILE" ]; then
+        printf '%s' "$AGENTMEMORY_ENV_FILE"; return
+    fi
+    local d="$CWD"
+    while [ "$d" != "/" ]; do
+        [ -f "$d/.env.mcp" ] && { printf '%s' "$d/.env.mcp"; return; }
+        d=$(dirname "$d")
+    done
+    local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/agent-mem/.env.mcp"
+    [ -f "$cfg" ] && printf '%s' "$cfg"
+}
+
+if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ]; then
+    _ENV=$(_agentmem_env_file)
+    if [ -n "$_ENV" ]; then
+        [ -z "${AGENTMEMORY_URL:-}" ]    && AGENTMEMORY_URL=$(grep    '^AGENTMEMORY_URL='    "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_SECRET:-}" ] && AGENTMEMORY_SECRET=$(grep '^AGENTMEMORY_SECRET=' "$_ENV" 2>/dev/null | cut -d= -f2-)
+    fi
+fi
+AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
 PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
+_BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)
+PROJECT="${PROJECT}${_BRANCH:+/$_BRANCH}"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 PAYLOAD=$(jq -cn \
