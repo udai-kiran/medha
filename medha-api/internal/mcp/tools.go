@@ -18,11 +18,18 @@ import (
 
 var cryptoRandRead = cryptorand.Read
 
+// ConsolidationTrigger is implemented by consolidation.SessionEndHandler.
+// Defined here to avoid an import cycle between mcp and consolidation.
+type ConsolidationTrigger interface {
+	OnSessionEnd(ctx context.Context, sessionID string) error
+}
+
 // MemoryToolsDeps bundles the dependencies the agent_mem MCP tools need.
 type MemoryToolsDeps struct {
 	Store         *state.Store
 	Search        *search.Hybrid
 	PythonBaseURL string
+	Consolidate   ConsolidationTrigger // optional; nil disables the consolidate tool
 }
 
 // toolHandler is the internal handler signature. All 25 tool bodies use this;
@@ -586,26 +593,20 @@ func RegisterMemoryTools(s *sdkmcp.Server, deps MemoryToolsDeps) {
 		if v, ok := args["limit"].(float64); ok && v > 0 {
 			limit = int(v)
 		}
-		rows, err := deps.Store.DB.QueryContext(ctx, `
-            SELECT id, project, status, observation_count, started_at, COALESCE(ended_at,'')
-            FROM sessions
-            WHERE ($1 = '' OR project = $1)
-            ORDER BY started_at DESC LIMIT $2
-        `, project, limit)
+		sessions, err := deps.Store.ListSessions(ctx, project, limit)
 		if err != nil {
 			return nil, &Error{Code: ErrInternal, Message: err.Error()}
 		}
-		defer func() { _ = rows.Close() }()
-		var out []map[string]any
-		for rows.Next() {
-			var id, proj, status, started, ended string
-			var count int
-			if err := rows.Scan(&id, &proj, &status, &count, &started, &ended); err != nil {
-				return nil, &Error{Code: ErrInternal, Message: err.Error()}
+		out := make([]map[string]any, 0, len(sessions))
+		for _, r := range sessions {
+			endedAt := ""
+			if r.EndedAt != nil {
+				endedAt = r.EndedAt.Format(time.RFC3339)
 			}
 			out = append(out, map[string]any{
-				"id": id, "project": proj, "status": status,
-				"observationCount": count, "startedAt": started, "endedAt": ended,
+				"id": r.ID, "project": r.Project, "status": r.Status,
+				"observationCount": r.ObservationCount,
+				"startedAt": r.StartedAt.Format(time.RFC3339), "endedAt": endedAt,
 			})
 		}
 		return map[string]any{"sessions": out}, nil
@@ -834,6 +835,35 @@ func RegisterMemoryTools(s *sdkmcp.Server, deps MemoryToolsDeps) {
 			"observationsCount": obs,
 			"memoriesCount":     mems,
 		}, nil
+	}))
+
+	s.AddTool(&sdkmcp.Tool{
+		Name:        "consolidate",
+		Description: "Trigger memory consolidation for a session: summarises observations, extracts entities, and persists long-term memories. Runs synchronously; may take up to 2 minutes for large sessions.",
+		InputSchema: map[string]any{
+			"type":     "object",
+			"required": []string{"sessionId"},
+			"properties": map[string]any{
+				"sessionId": map[string]any{"type": "string", "description": "Session ID to consolidate"},
+			},
+		},
+	}, wrap(func(ctx context.Context, args map[string]any) (any, *Error) {
+		if deps.Consolidate == nil {
+			return nil, &Error{Code: ErrInternal, Message: "consolidation not configured on this server"}
+		}
+		var p struct {
+			SessionID string `json:"sessionId"`
+		}
+		if e := MustParseArgs(args, &p); e != nil {
+			return nil, e
+		}
+		if p.SessionID == "" {
+			return nil, &Error{Code: ErrInvalidParams, Message: "sessionId is required"}
+		}
+		if err := deps.Consolidate.OnSessionEnd(ctx, p.SessionID); err != nil {
+			return nil, &Error{Code: ErrInternal, Message: err.Error()}
+		}
+		return map[string]any{"status": "ok", "sessionId": p.SessionID}, nil
 	}))
 
 	RegisterExtendedTools(s, deps)

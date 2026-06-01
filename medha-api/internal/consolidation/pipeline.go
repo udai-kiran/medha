@@ -28,12 +28,21 @@ import (
 // The pipeline is best-effort: each step is independent and may fail
 // without aborting the others. Python unreachable → fall back to a synthetic
 // session summary built in Go from the raw observation rows.
+// MemoryIndexer is the minimal interface for indexing memory content into
+// BM25 + vector search after the consolidation pipeline persists a memory row.
+type MemoryIndexer interface {
+	IndexObservation(ctx context.Context, id, project, text string) error
+}
+
 type Pipeline struct {
 	Store               *state.Store
 	PythonServiceURL    string
 	HTTPClient          *http.Client
 	Logger              *slog.Logger
 	StepTimeout         time.Duration
+	// Indexer, if non-nil, is called after each memory is persisted so that
+	// consolidated memories are discoverable via smart-search.
+	Indexer MemoryIndexer
 }
 
 // NewPipeline wires a Pipeline with reasonable defaults.
@@ -58,22 +67,30 @@ func (p *Pipeline) Run(ctx context.Context, sessionID string) (memCount int, err
 	log := p.Logger.With("session_id", sessionID, "component", "consolidation")
 	log.Info("consolidation.start")
 
-	obs, err := p.fetchObservations(ctx, sessionID)
+	obs, totalRaw, err := p.fetchObservations(ctx, sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("fetch observations: %w", err)
 	}
+	log.Info("consolidation.fetch", "compressed", len(obs), "total_raw", totalRaw)
 	if len(obs) == 0 {
-		log.Info("consolidation.noop", "reason", "no observations")
+		if totalRaw > 0 {
+			log.Warn("consolidation.noop", "reason", "no compressed observations yet", "total_raw", totalRaw,
+				"hint", "wait for the compression worker to process this session's observations")
+		} else {
+			log.Info("consolidation.noop", "reason", "session has no observations")
+		}
 		return 0, nil
 	}
 
 	// Step 2: summarise. Python-backed; falls back to a Go-side synthetic
 	// summary if /summarize fails.
+	log.Info("consolidation.summarize.start", "observations", len(obs))
 	summary, err := p.summarise(ctx, sessionID, obs)
 	if err != nil {
 		log.Warn("consolidation.summarize_failed", "err", err)
 		summary = syntheticSummaryFromObservations(sessionID, obs)
 	}
+	log.Info("consolidation.summarize.done", "title", summary.Title, "decisions", len(summary.KeyDecisions), "concepts", len(summary.Concepts))
 	if err := p.persistSummary(ctx, summary); err != nil {
 		log.Error("consolidation.persist_summary", "err", err)
 		return 0, err
@@ -81,12 +98,27 @@ func (p *Pipeline) Run(ctx context.Context, sessionID string) (memCount int, err
 
 	// Step 3: distil 1+ Memory rows from the summary.
 	memories := distilMemories(obs, summary)
+	if len(memories) == 0 {
+		log.Info("consolidation.noop", "reason", "session summary has no substantive content",
+			"files", len(summary.FilesModified), "decisions", len(summary.KeyDecisions), "concepts", len(summary.Concepts))
+		return 0, nil
+	}
+	log.Info("consolidation.distil", "memory_count", len(memories))
 	for _, m := range memories {
 		if err := p.persistMemory(ctx, m); err != nil {
-			log.Warn("consolidation.persist_memory", "memory_id", m.ID, "err", err)
+			log.Warn("consolidation.persist_memory.failed", "memory_id", m.ID, "err", err)
 			continue
 		}
+		log.Info("consolidation.persist_memory.ok", "memory_id", m.ID, "title", m.Title, "tier", m.Tier)
 		memCount++
+		if p.Indexer != nil {
+			text := m.Title + " " + m.Content
+			if err := p.Indexer.IndexObservation(ctx, m.ID, m.Project, text); err != nil {
+				log.Warn("consolidation.index_memory.failed", "memory_id", m.ID, "err", err)
+			} else {
+				log.Info("consolidation.index_memory.ok", "memory_id", m.ID)
+			}
+		}
 	}
 
 	// Step 4: mark the session completed (idempotent).
@@ -94,20 +126,25 @@ func (p *Pipeline) Run(ctx context.Context, sessionID string) (memCount int, err
 		log.Warn("consolidation.mark_ended", "err", err)
 	}
 
-	log.Info("consolidation.done", "memories", memCount, "observations", len(obs))
+	log.Info("consolidation.done", "memories_persisted", memCount, "observations_processed", len(obs))
 	return memCount, nil
 }
 
-// fetchObservations returns every compressed observation for the session.
+// fetchObservations returns every compressed observation for the session,
+// plus the total raw count (compressed + uncompressed) for diagnostics.
 // Uncompressed rows are skipped — their narrative would be empty.
-func (p *Pipeline) fetchObservations(ctx context.Context, sessionID string) ([]*state.ObservationRow, error) {
+func (p *Pipeline) fetchObservations(ctx context.Context, sessionID string) (_ []*state.ObservationRow, totalRaw int, _ error) {
+	_ = p.Store.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM observations WHERE session_id = $1`, sessionID,
+	).Scan(&totalRaw)
+
 	rows, err := p.Store.DB.QueryContext(ctx, `
         SELECT id FROM observations
         WHERE session_id = $1 AND compressed = 1
         ORDER BY created_at ASC
     `, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, totalRaw, err
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -115,12 +152,12 @@ func (p *Pipeline) fetchObservations(ctx context.Context, sessionID string) ([]*
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, totalRaw, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, totalRaw, err
 	}
 
 	out := make([]*state.ObservationRow, 0, len(ids))
@@ -131,7 +168,7 @@ func (p *Pipeline) fetchObservations(ctx context.Context, sessionID string) ([]*
 		}
 		out = append(out, row)
 	}
-	return out, nil
+	return out, totalRaw, nil
 }
 
 // summaryDigest is what we send to Python /summarize.
@@ -296,7 +333,7 @@ func (p *Pipeline) persistSummary(ctx context.Context, s *sessionSummary) error 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := p.Store.DB.ExecContext(ctx, `
         INSERT INTO sessions_summary (session_id, title, narrative, key_decisions, files_modified, concepts, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT(session_id) DO UPDATE SET
             title          = excluded.title,
             narrative      = excluded.narrative,
@@ -326,8 +363,19 @@ type memoryRow struct {
 // distilMemories produces one Memory per session summary plus optional
 // per-concept Memories. Real LLM clustering (semantic) is Task 27 / future
 // work; this baseline gives us a navigable memory store immediately.
+// hasSubstantiveContent returns true if the summary describes work worth
+// remembering: at least one file was modified, a key decision was made, or
+// two or more distinct concepts were discussed. Sessions with only empty or
+// trivial tool invocations fail this test and are not distilled into memories.
+func hasSubstantiveContent(s *sessionSummary) bool {
+	return len(s.FilesModified) > 0 || len(s.KeyDecisions) > 0 || len(s.Concepts) >= 2
+}
+
 func distilMemories(obs []*state.ObservationRow, summary *sessionSummary) []memoryRow {
 	if summary == nil || len(obs) == 0 {
+		return nil
+	}
+	if !hasSubstantiveContent(summary) {
 		return nil
 	}
 	project := obs[0].Project
@@ -393,7 +441,7 @@ func (p *Pipeline) persistMemory(ctx context.Context, m memoryRow) error {
             id, project, type, tier, title, content,
             concepts_json, files_json, session_ids_json, source_observation_ids,
             strength, is_latest, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, 1, ?, ?)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1.0, 1, $11, $12)
     `, m.ID, m.Project, m.Type, m.Tier, m.Title, m.Content,
 		string(concepts), string(files), string(sessions), string(sources),
 		now, now)

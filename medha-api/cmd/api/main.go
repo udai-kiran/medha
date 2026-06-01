@@ -74,6 +74,23 @@ func main() {
 	defer func() { _ = queue.Close() }()
 	enq := consolidation.NewEnqueuer(queue)
 
+	// For the in-memory backend the queue is local to this process, so no
+	// external worker can consume it. Start the worker goroutine here so
+	// compression jobs are actually processed.
+	inProcWorker := consolidation.NewWorker(consolidation.WorkerConfig{
+		PythonServiceURL:    cfg.PythonServiceURL,
+		InternalCallbackURL: "http://localhost" + cfg.Addr(),
+		HTTPTimeout:         60 * time.Second,
+		Logger:              logger,
+		Store:               store,
+	})
+	go func() {
+		logger.Info("worker.inproc.start")
+		if err := queue.Consume(rootCtx, inProcWorker.Handle); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("worker.inproc.failed", "err", err)
+		}
+	}()
+
 	// Search engines: BM25 + vector + graph. The vector index talks to the
 	// Python /embed endpoint; if Python is down, vector mode degrades to no-op
 	// (the hybrid orchestrator silently skips empty results).
@@ -152,17 +169,23 @@ func main() {
 		return firstErr
 	})
 
+	// Wire the same index bus into the consolidation pipeline so that
+	// memories created during session-end are searchable via smart-search.
+	consolPipeline.Indexer = indexBus
+
 	// Real-time viewer hub (Task 28). The capture path broadcasts observations
 	// here; the WebSocket dashboard fans them out to subscribed clients.
 	viewerHub := viewer.NewHub(logger)
+	viewerStats := storeStats{s: store, hub: viewerHub}
 
 	// Prometheus metrics — exported at /metrics.
 	metrics := telemetry.NewMetrics()
 
 	// MCP Streamable HTTP: mounts at /agentmemory/mcp, all methods.
 	mcpSDKServer := mcp.NewMemoryServer("agent_mem", "0.1.0", mcp.MemoryToolsDeps{
-		Store:  store,
-		Search: hybrid,
+		Store:       store,
+		Search:      hybrid,
+		Consolidate: consolidation.SessionEndHandler{Pipeline: consolPipeline},
 	})
 	mcpHandler := sdkmcp.NewStreamableHTTPHandler(func(_ *http.Request) *sdkmcp.Server {
 		return mcpSDKServer
@@ -192,9 +215,11 @@ func main() {
 	}
 
 	// Viewer: WebSocket /stream, SSE /events, and an HTML dashboard at /.
+	viewerHandler := viewer.New(viewerHub, logger)
+	viewerHandler.Stats = viewerStats
 	viewerSrv := &http.Server{
 		Addr:              cfg.ViewerAddr(),
-		Handler:           viewer.New(viewerHub, logger),
+		Handler:           viewerHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return rootCtx },
 	}
@@ -234,6 +259,90 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("shutdown.done")
+}
+
+// storeStats adapts *state.Store to viewer.StatsReader.
+type storeStats struct {
+	s   *state.Store
+	hub *viewer.Hub
+}
+
+func (a storeStats) Projects(ctx context.Context) ([]string, error) {
+	return a.s.ListProjects(ctx)
+}
+
+func (a storeStats) Sessions(ctx context.Context, project string, limit int) ([]viewer.SessionSummary, error) {
+	rows, err := a.s.ListSessions(ctx, project, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]viewer.SessionSummary, len(rows))
+	for i, r := range rows {
+		out[i] = viewer.SessionSummary{
+			ID:               r.ID,
+			Project:          r.Project,
+			Status:           r.Status,
+			ObservationCount: r.ObservationCount,
+			StartedAt:        r.StartedAt,
+			EndedAt:          r.EndedAt,
+		}
+	}
+	return out, nil
+}
+
+func (a storeStats) Counts(ctx context.Context) (viewer.SystemCounts, error) {
+	c := a.s.SystemStats(ctx)
+	return viewer.SystemCounts{
+		Sessions:     c.Sessions,
+		Observations: c.Observations,
+		Memories:     c.Memories,
+		Subscribers:  a.hub.SubscriberCount(),
+	}, nil
+}
+
+func (a storeStats) Memories(ctx context.Context, project string, limit int) ([]viewer.MemorySummary, error) {
+	rows, err := a.s.ListMemoriesByTier(ctx, project, "", limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]viewer.MemorySummary, len(rows))
+	for i, r := range rows {
+		out[i] = viewer.MemorySummary{
+			ID:        r.ID,
+			Project:   r.Project,
+			Tier:      r.Tier,
+			Title:     r.Title,
+			Content:   r.Content,
+			Strength:  r.Strength,
+			CreatedAt: r.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
+func (a storeStats) Events(ctx context.Context, sessionID string, limit int) ([]viewer.Event, error) {
+	rows, err := a.s.ListObservations(ctx, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]viewer.Event, len(rows))
+	for i, r := range rows {
+		payload := map[string]any{"hookType": r.HookType}
+		if r.ToolName != "" {
+			payload["toolName"] = r.ToolName
+		}
+		if r.Title != "" {
+			payload["title"] = r.Title
+		}
+		out[i] = viewer.Event{
+			Type:      "observation",
+			SessionID: r.SessionID,
+			ID:        r.ID,
+			Timestamp: r.CreatedAt,
+			Payload:   payload,
+		}
+	}
+	return out, nil
 }
 
 // indexBusFunc adapts a plain function to api.IndexBus. Keeps the wiring

@@ -92,6 +92,105 @@ func (s *Store) MarkSessionEnded(ctx context.Context, sessionID string) error {
 	return err
 }
 
+// ListProjects returns all distinct non-empty project names from sessions.
+func (s *Store) ListProjects(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT DISTINCT project FROM sessions WHERE project != '' ORDER BY project`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var p string
+		if rows.Scan(&p) == nil {
+			out = append(out, p)
+		}
+	}
+	return out, rows.Err()
+}
+
+// ListSessions returns sessions ordered by started_at DESC, optionally filtered
+// by project. Use an empty project string to list across all projects.
+func (s *Store) ListSessions(ctx context.Context, project string, limit int) ([]*SessionRow, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+        SELECT id, project, cwd, status, observation_count, started_at, updated_at, COALESCE(ended_at,'')
+        FROM sessions
+        WHERE ($1 = '' OR project = $1)
+        ORDER BY started_at DESC LIMIT $2
+    `, project, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*SessionRow
+	for rows.Next() {
+		var r SessionRow
+		var started, upd, ended string
+		var cwd sql.NullString
+		if err := rows.Scan(&r.ID, &r.Project, &cwd, &r.Status, &r.ObservationCount, &started, &upd, &ended); err != nil {
+			return nil, err
+		}
+		if cwd.Valid {
+			r.CWD = cwd.String
+		}
+		r.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
+		r.UpdatedAt, _ = time.Parse(time.RFC3339Nano, upd)
+		if ended != "" {
+			t, _ := time.Parse(time.RFC3339Nano, ended)
+			r.EndedAt = &t
+		}
+		out = append(out, &r)
+	}
+	return out, rows.Err()
+}
+
+// SystemCounts holds aggregate row counts for the stats endpoint.
+type SystemCounts struct {
+	Sessions     int
+	Observations int
+	Memories     int
+}
+
+// SystemStats returns aggregate counts. Individual query errors are silenced;
+// counts default to zero rather than aborting the stats response.
+func (s *Store) SystemStats(ctx context.Context) SystemCounts {
+	var c SystemCounts
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions`).Scan(&c.Sessions)
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM observations`).Scan(&c.Observations)
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&c.Memories)
+	return c
+}
+
+// ListObservations returns recent observations ordered newest-first.
+// Pass an empty sessionID to list across all sessions.
+func (s *Store) ListObservations(ctx context.Context, sessionID string, limit int) ([]*ObservationRow, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+        SELECT id, session_id, project, hook_type,
+               tool_name, COALESCE(type,''), COALESCE(title,''), created_at
+        FROM observations
+        WHERE ($1 = '' OR session_id = $1)
+        ORDER BY created_at DESC LIMIT $2
+    `, sessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*ObservationRow
+	for rows.Next() {
+		var o ObservationRow
+		var toolName sql.NullString
+		var created string
+		if err := rows.Scan(&o.ID, &o.SessionID, &o.Project, &o.HookType, &toolName, &o.Type, &o.Title, &created); err != nil {
+			return nil, err
+		}
+		o.ToolName = toolName.String
+		o.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		out = append(out, &o)
+	}
+	return out, rows.Err()
+}
+
 // ObservationRow is the storage-level view of an observation row. Higher
 // layers convert this to/from the models.RawObservation / CompressedObservation
 // shapes (Task 7).

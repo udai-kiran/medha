@@ -4,56 +4,519 @@
 <meta charset="utf-8">
 <title>agent_mem — live viewer</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-         margin: 0; padding: 1rem 2rem; background: #0f1115; color: #e7eaf0; }
-  h1 { margin: 0 0 .5rem; font-size: 1.15rem; }
-  #status { font-size: .85rem; color: #8b95a7; margin-bottom: 1rem; }
-  #status.ok { color: #4ade80; }
-  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #1f2330; vertical-align: top; }
-  th { background: #161a25; position: sticky; top: 0; color: #8b95a7; font-weight: 500; }
-  tr:hover { background: #131724; }
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: #0f1115;
+    color: #e7eaf0;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── top bar ── */
+  #topbar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: .5rem 1rem;
+    background: #13161f;
+    border-bottom: 1px solid #1f2330;
+    flex-shrink: 0;
+  }
+  #topbar h1 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: .02em; }
+  #conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; flex-shrink: 0; }
+  #conn-dot.ok { background: #4ade80; }
+  #conn-label { font-size: .8rem; color: #8b95a7; }
+  #sub-count { font-size: .8rem; color: #8b95a7; margin-left: auto; }
+
+  /* ── body layout ── */
+  #body { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── sidebar ── */
+  #sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    background: #13161f;
+    border-right: 1px solid #1f2330;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sb-section { padding: .6rem .75rem .4rem; }
+  .sb-label {
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: #4b5563;
+    margin-bottom: .4rem;
+  }
+
+  /* stats */
+  #stats-grid { display: flex; flex-direction: column; gap: .1rem; font-size: .8rem; }
+  .stat-row { display: flex; align-items: center; gap: .5rem; padding: .1rem .25rem; border-radius: 3px; }
+  .stat-val { color: #e7eaf0; font-variant-numeric: tabular-nums; min-width: 2.5rem; text-align: right; }
+  .stat-key { color: #8b95a7; }
+  .stat-row.clickable { cursor: pointer; }
+  .stat-row.clickable:hover .stat-val { color: #93c5fd; }
+  .stat-row.clickable:hover .stat-key { color: #c9d1de; }
+
+  /* projects + sessions lists */
+  .sb-list { flex: 1; overflow-y: auto; }
+  .sb-list::-webkit-scrollbar { width: 4px; }
+  .sb-list::-webkit-scrollbar-thumb { background: #2a2f3e; border-radius: 2px; }
+
+  .sb-item {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .3rem .75rem;
+    font-size: .8rem;
+    cursor: pointer;
+    color: #8b95a7;
+    border-radius: 4px;
+    margin: 0 .3rem;
+    transition: background .1s, color .1s;
+  }
+  .sb-item:hover { background: #1a1f2e; color: #c9d1de; }
+  .sb-item.active { background: #1e2535; color: #93c5fd; }
+  .sb-item .badge {
+    margin-left: auto;
+    font-size: .7rem;
+    color: #4b5563;
+    font-variant-numeric: tabular-nums;
+  }
+  .sb-item.active .badge { color: #6b9fd4; }
+  .dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: #4b5563;
+  }
+  .dot.active { background: #4ade80; }
+
+  #sessions-area { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+  #projects-area { display: flex; flex-direction: column; max-height: 45%; }
+  #projects-list { overflow-y: auto; }
+  #projects-list::-webkit-scrollbar { width: 4px; }
+  #projects-list::-webkit-scrollbar-thumb { background: #2a2f3e; border-radius: 2px; }
+
+  /* ── main panel ── */
+  #main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* filter chips */
+  #filterbar {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .4rem .75rem;
+    border-bottom: 1px solid #1f2330;
+    flex-shrink: 0;
+    min-height: 36px;
+  }
+  #filterbar:empty { display: none; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .3rem;
+    background: #1e2535;
+    color: #93c5fd;
+    border: 1px solid #2a3a55;
+    border-radius: 999px;
+    padding: .15rem .55rem;
+    font-size: .75rem;
+  }
+  .chip button {
+    background: none; border: none; cursor: pointer;
+    color: #6b9fd4; padding: 0; font-size: .85rem; line-height: 1;
+  }
+  .chip button:hover { color: #e7eaf0; }
+
+  /* events table */
+  #events-wrap { flex: 1; overflow-y: auto; }
+  #events-wrap::-webkit-scrollbar { width: 6px; }
+  #events-wrap::-webkit-scrollbar-thumb { background: #2a2f3e; border-radius: 3px; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #1a1f2e; vertical-align: top; }
+  th {
+    background: #13161f;
+    position: sticky; top: 0;
+    color: #8b95a7;
+    font-weight: 500;
+    font-size: .75rem;
+    letter-spacing: .04em;
+    z-index: 1;
+  }
+  tr { transition: opacity .2s; }
+  tr:hover td { background: #131724; }
+  tr.dimmed { opacity: .22; }
   .type-observation { color: #93c5fd; }
   .type-memory      { color: #a78bfa; }
   .type-system      { color: #fbbf24; }
   .type-session     { color: #4ade80; }
-  pre { margin: 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, monospace; font-size: .8rem; color: #c9d1de; }
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: .75rem;
+    color: #c9d1de;
+    max-width: 55vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sess-short { font-family: ui-monospace, monospace; font-size: .75rem; color: #8b95a7; }
 </style>
 </head>
 <body>
-<h1>agent_mem — live viewer</h1>
-<div id="status">connecting…</div>
-<table id="events">
-  <thead><tr><th>time</th><th>type</th><th>session</th><th>id</th><th>payload</th></tr></thead>
-  <tbody></tbody>
-</table>
+
+<div id="topbar">
+  <h1>agent_mem</h1>
+  <div id="conn-dot"></div>
+  <span id="conn-label">connecting…</span>
+  <span id="sub-count"></span>
+</div>
+
+<div id="body">
+
+  <div id="sidebar">
+    <div id="stats-area" class="sb-section">
+      <div class="sb-label">system</div>
+      <div id="stats-grid">
+        <div class="stat-row clickable" onclick="onStatClick('sessions')" title="Show all sessions">
+          <span class="stat-val" id="s-sessions">–</span><span class="stat-key">sessions</span>
+        </div>
+        <div class="stat-row clickable" onclick="onStatClick('observations')" title="Reload all observations">
+          <span class="stat-val" id="s-obs">–</span><span class="stat-key">observations</span>
+        </div>
+        <div class="stat-row clickable" onclick="onStatClick('memories')" title="Show all memories">
+          <span class="stat-val" id="s-mems">–</span><span class="stat-key">memories</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-val" id="s-viewers">–</span><span class="stat-key">viewers</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="projects-area" class="sb-section">
+      <div class="sb-label">projects</div>
+      <div id="projects-list" class="sb-list"></div>
+    </div>
+
+    <div id="sessions-area" class="sb-section">
+      <div class="sb-label">sessions</div>
+      <div id="sessions-list" class="sb-list"></div>
+    </div>
+  </div>
+
+  <div id="main">
+    <div id="filterbar"></div>
+    <div id="events-wrap">
+      <table id="events">
+        <thead><tr>
+          <th>time</th>
+          <th>type</th>
+          <th>session</th>
+          <th>id</th>
+          <th>payload</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
 <script>
-  const status = document.getElementById("status");
-  const tbody = document.querySelector("#events tbody");
-  const MAX_ROWS = 200;
+// ── state ─────────────────────────────────────────────────────────────
+const MAX_ROWS = 500;
+let activeProject = null;
+let activeSession = null;
+// Maps session ID → project name (populated from sessions API responses)
+const sessionProjectMap = {};
 
-  function row(evt) {
-    const tr = document.createElement("tr");
-    const ts = new Date(evt.timestamp).toLocaleTimeString();
-    tr.innerHTML = `<td>${ts}</td>
-                    <td class="type-${evt.type}">${evt.type}</td>
-                    <td>${evt.sessionId || ""}</td>
-                    <td>${evt.id || ""}</td>
-                    <td><pre>${JSON.stringify(evt.payload || {}, null, 0)}</pre></td>`;
-    tbody.prepend(tr);
-    while (tbody.children.length > MAX_ROWS) tbody.removeChild(tbody.lastChild);
-  }
+// ── DOM refs ──────────────────────────────────────────────────────────
+const connDot    = document.getElementById("conn-dot");
+const connLabel  = document.getElementById("conn-label");
+const subCount   = document.getElementById("sub-count");
+const filterbar  = document.getElementById("filterbar");
+const tbody      = document.querySelector("#events tbody");
 
-  function connect() {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${location.host}/stream`;
-    const ws = new WebSocket(url);
-    ws.onopen   = () => { status.textContent = "connected"; status.className = "ok"; };
-    ws.onmessage = e => { try { row(JSON.parse(e.data)); } catch (err) {} };
-    ws.onclose  = () => { status.textContent = "disconnected — retrying in 2s"; status.className = ""; setTimeout(connect, 2000); };
-    ws.onerror  = () => { ws.close(); };
+// ── filter chips ──────────────────────────────────────────────────────
+function renderFilterChips() {
+  filterbar.innerHTML = "";
+  if (activeProject) {
+    const chip = mkChip("project: " + activeProject, () => {
+      activeProject = null;
+      activeSession = null;
+      document.querySelectorAll(".sb-item").forEach(el => el.classList.remove("active"));
+      document.getElementById("sessions-list").innerHTML = "";
+      renderFilterChips();
+      applyFilter();
+    });
+    filterbar.appendChild(chip);
   }
-  connect();
+  if (activeSession) {
+    const chip = mkChip("session: " + short(activeSession), () => {
+      activeSession = null;
+      document.querySelectorAll("#sessions-list .sb-item").forEach(el => el.classList.remove("active"));
+      renderFilterChips();
+      applyFilter();
+    });
+    filterbar.appendChild(chip);
+  }
+}
+
+function mkChip(label, onClose) {
+  const el = document.createElement("span");
+  el.className = "chip";
+  el.innerHTML = `${esc(label)} <button title="clear">×</button>`;
+  el.querySelector("button").onclick = onClose;
+  return el;
+}
+
+// ── event rows ────────────────────────────────────────────────────────
+function addRow(evt) {
+  const tr = document.createElement("tr");
+  const ts = new Date(evt.timestamp).toLocaleTimeString();
+  tr.dataset.project = sessionProjectMap[evt.sessionId] || "";
+  tr.dataset.session = evt.sessionId || "";
+  tr.innerHTML =
+    `<td>${esc(ts)}</td>` +
+    `<td class="type-${esc(evt.type)}">${esc(evt.type)}</td>` +
+    `<td><span class="sess-short">${esc(short(evt.sessionId || ""))}</span></td>` +
+    `<td><span class="sess-short">${esc(short(evt.id || ""))}</span></td>` +
+    `<td><pre>${esc(JSON.stringify(evt.payload || {}, null, 0))}</pre></td>`;
+  tbody.prepend(tr);
+  applyFilterRow(tr);
+  while (tbody.children.length > MAX_ROWS) tbody.removeChild(tbody.lastChild);
+}
+
+function applyFilterRow(tr) {
+  const matchProject = !activeProject || tr.dataset.project === activeProject ||
+                       (tr.dataset.project === "" && !activeProject);
+  const matchSession = !activeSession || tr.dataset.session === activeSession;
+  tr.classList.toggle("dimmed", !(matchProject && matchSession));
+}
+
+function applyFilter() {
+  document.querySelectorAll("#events tbody tr").forEach(applyFilterRow);
+}
+
+// ── sidebar: projects ─────────────────────────────────────────────────
+function renderProjects(projects) {
+  const list = document.getElementById("projects-list");
+  list.innerHTML = "";
+  if (!projects.length) {
+    list.innerHTML = `<div style="padding:.3rem .75rem;font-size:.75rem;color:#4b5563">none yet</div>`;
+    return;
+  }
+  projects.forEach(p => {
+    const el = document.createElement("div");
+    el.className = "sb-item" + (p === activeProject ? " active" : "");
+    el.innerHTML = `<span>${esc(p)}</span>`;
+    el.onclick = () => selectProject(p, el);
+    list.appendChild(el);
+  });
+}
+
+function selectProject(p, el) {
+  if (activeProject === p) {
+    // deselect
+    activeProject = null;
+    activeSession = null;
+    document.querySelectorAll(".sb-item").forEach(x => x.classList.remove("active"));
+    document.getElementById("sessions-list").innerHTML = "";
+    renderFilterChips();
+    applyFilter();
+    return;
+  }
+  activeProject = p;
+  activeSession = null;
+  document.querySelectorAll("#projects-list .sb-item").forEach(x => x.classList.remove("active"));
+  el.classList.add("active");
+  renderFilterChips();
+  applyFilter();
+  fetchSessions(p);
+}
+
+// ── sidebar: sessions ─────────────────────────────────────────────────
+function renderSessions(sessions) {
+  const list = document.getElementById("sessions-list");
+  list.innerHTML = "";
+  if (!sessions.length) {
+    list.innerHTML = `<div style="padding:.3rem .75rem;font-size:.75rem;color:#4b5563">no sessions</div>`;
+    return;
+  }
+  sessions.forEach(s => {
+    // Populate reverse-lookup map.
+    sessionProjectMap[s.id] = s.project;
+
+    const isActive = s.status === "active";
+    const el = document.createElement("div");
+    el.className = "sb-item" + (s.id === activeSession ? " active" : "");
+    el.innerHTML =
+      `<span class="dot ${isActive ? "active" : ""}"></span>` +
+      `<span title="${esc(s.id)}">${esc(short(s.id))}</span>` +
+      `<span class="badge">${s.observationCount}</span>`;
+    el.onclick = () => selectSession(s.id, el);
+    list.appendChild(el);
+  });
+}
+
+function selectSession(id, el) {
+  if (activeSession === id) {
+    activeSession = null;
+    el.classList.remove("active");
+    renderFilterChips();
+    fetchEvents(activeProject ? "" : "");
+    return;
+  }
+  activeSession = id;
+  document.querySelectorAll("#sessions-list .sb-item").forEach(x => x.classList.remove("active"));
+  el.classList.add("active");
+  renderFilterChips();
+  fetchEvents(id);
+}
+
+// ── stats ─────────────────────────────────────────────────────────────
+function updateStats(data) {
+  setIfNum("s-sessions", data.sessions);
+  setIfNum("s-obs",      data.observations);
+  setIfNum("s-mems",     data.memories);
+  setIfNum("s-viewers",  data.subscribers);
+  if (data.subscribers != null) {
+    const n = data.subscribers;
+    subCount.textContent = n === 1 ? "1 viewer" : `${n} viewers`;
+  }
+}
+
+function setIfNum(id, v) {
+  if (v != null) document.getElementById(id).textContent = v.toLocaleString();
+}
+
+// ── data fetching ─────────────────────────────────────────────────────
+function fetchStats() {
+  fetch("/api/stats").then(r => r.ok ? r.json() : null).then(d => { if (d) updateStats(d); }).catch(() => {});
+}
+
+function fetchProjects() {
+  fetch("/api/projects").then(r => r.ok ? r.json() : null).then(d => {
+    if (d && d.projects) renderProjects(d.projects);
+  }).catch(() => {});
+}
+
+function fetchSessions(project) {
+  const url = project ? `/api/sessions?project=${encodeURIComponent(project)}&limit=50` : "/api/sessions?limit=50";
+  fetch(url).then(r => r.ok ? r.json() : null).then(d => {
+    if (d && d.sessions) renderSessions(d.sessions);
+  }).catch(() => {});
+}
+
+function fetchEvents(sessionID) {
+  const url = sessionID
+    ? `/api/events?session=${encodeURIComponent(sessionID)}&limit=200`
+    : "/api/events?limit=200";
+  fetch(url).then(r => r.ok ? r.json() : null).then(d => {
+    if (!d || !d.events) return;
+    tbody.innerHTML = "";
+    // DB returns newest-first; addRow prepends, so iterate reverse for chrono order.
+    for (let i = d.events.length - 1; i >= 0; i--) {
+      addRow(d.events[i]);
+    }
+  }).catch(() => {});
+}
+
+function refreshAll() { fetchStats(); fetchProjects(); }
+
+// ── WebSocket ─────────────────────────────────────────────────────────
+function connect() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/stream`);
+
+  ws.onopen = () => {
+    connDot.className = "ok";
+    connLabel.textContent = "connected";
+    refreshAll();
+    fetchEvents("");
+  };
+
+  ws.onmessage = e => {
+    try {
+      const evt = JSON.parse(e.data);
+      addRow(evt);
+      // Refresh stats + sessions list on every observation/memory event.
+      if (evt.type === "observation" || evt.type === "memory" || evt.type === "session") {
+        fetchStats();
+        if (activeProject) fetchSessions(activeProject);
+      }
+    } catch (_) {}
+  };
+
+  ws.onclose = () => {
+    connDot.className = "";
+    connLabel.textContent = "disconnected — retrying in 3s";
+    setTimeout(connect, 3000);
+  };
+
+  ws.onerror = () => ws.close();
+}
+
+// ── utils ─────────────────────────────────────────────────────────────
+function short(s) { return s ? s.slice(-8) : ""; }
+function esc(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// ── memories ──────────────────────────────────────────────────────────
+function fetchMemories(project) {
+  const url = project ? `/api/memories?project=${encodeURIComponent(project)}&limit=200` : "/api/memories?limit=200";
+  fetch(url).then(r => r.ok ? r.json() : null).then(d => {
+    if (!d || !d.memories) return;
+    tbody.innerHTML = "";
+    for (let i = d.memories.length - 1; i >= 0; i--) {
+      const m = d.memories[i];
+      addRow({
+        type: "memory",
+        id: m.id,
+        timestamp: m.createdAt,
+        payload: { tier: m.tier, title: m.title, strength: m.strength, content: m.content },
+      });
+    }
+  }).catch(() => {});
+}
+
+// ── stat clicks ───────────────────────────────────────────────────────
+function onStatClick(which) {
+  if (which === "sessions") {
+    activeProject = null;
+    activeSession = null;
+    document.querySelectorAll(".sb-item").forEach(el => el.classList.remove("active"));
+    document.getElementById("sessions-list").innerHTML = "";
+    renderFilterChips();
+    applyFilter();
+    fetchSessions("");
+    document.getElementById("sessions-area").scrollIntoView({ behavior: "smooth" });
+  } else if (which === "observations") {
+    activeSession = null;
+    renderFilterChips();
+    fetchEvents("");
+    applyFilter();
+  } else if (which === "memories") {
+    activeSession = null;
+    renderFilterChips();
+    fetchMemories(activeProject || "");
+  }
+}
+
+// ── boot ──────────────────────────────────────────────────────────────
+connect();
+setInterval(refreshAll, 15000);
 </script>
 </body>
 </html>

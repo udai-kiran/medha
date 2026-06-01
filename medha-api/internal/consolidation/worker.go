@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/udai-kiran/medha/internal/state"
 )
 
 // WorkerConfig configures the consumer process started by cmd/worker.
@@ -23,6 +25,8 @@ type WorkerConfig struct {
 	HTTPTimeout time.Duration
 	// Logger is required.
 	Logger *slog.Logger
+	// Store is used to fetch raw observations before sending them to Python.
+	Store *state.Store
 }
 
 // Worker processes jobs pulled from a Queue. The compress path:
@@ -65,6 +69,16 @@ func (w *Worker) Handle(ctx context.Context, j Job) error {
 	}
 }
 
+// compressRequest is the body for Python POST /compress.
+type compressRequest struct {
+	ID        string `json:"id"`
+	SessionID string `json:"sessionId"`
+	HookType  string `json:"hookType"`
+	ToolName  string `json:"toolName,omitempty"`
+	RawText   string `json:"rawText"`
+	Timestamp string `json:"timestamp"`
+}
+
 func (w *Worker) handleCompress(ctx context.Context, j Job) error {
 	var p CompressPayload
 	if err := json.Unmarshal(j.Payload, &p); err != nil {
@@ -73,16 +87,85 @@ func (w *Worker) handleCompress(ctx context.Context, j Job) error {
 	log := w.cfg.Logger.With("job_id", j.ID, "observation_id", p.ObservationID, "session_id", p.SessionID)
 	log.Info("worker.compress.start", "attempt", j.Attempt)
 
-	// In M2 we don't yet fetch the raw observation from Go — Task 13 will
-	// extend this with a real Python round-trip when the synthetic worker can
-	// pull the observation back from the state layer. For now we hit /health
-	// to validate the Python service path is reachable, then log success.
-	if err := w.pingPython(ctx); err != nil {
-		log.Warn("worker.compress.python_unreachable", "err", err)
+	if w.cfg.Store == nil {
+		log.Warn("worker.compress.no_store", "note", "store not configured, skipping")
+		return nil
+	}
+
+	obs, err := w.cfg.Store.GetObservation(ctx, p.ObservationID)
+	if err != nil {
+		log.Warn("worker.compress.fetch_failed", "err", err)
 		return err
 	}
-	log.Info("worker.compress.done_stub", "note", "Task 13 wires the real round-trip")
+
+	rawText := buildRawText(obs)
+	req := compressRequest{
+		ID:        obs.ID,
+		SessionID: obs.SessionID,
+		HookType:  obs.HookType,
+		ToolName:  obs.ToolName,
+		RawText:   rawText,
+		Timestamp: obs.CreatedAt.UTC().Format(time.RFC3339),
+	}
+
+	compressed, err := w.callPythonCompress(ctx, req)
+	if err != nil {
+		log.Warn("worker.compress.python_failed", "err", err)
+		return err
+	}
+
+	if err := w.PostCompressed(ctx, obs.ID, compressed); err != nil {
+		log.Warn("worker.compress.callback_failed", "err", err)
+		return err
+	}
+
+	log.Info("worker.compress.done", "title", compressed["title"])
 	return nil
+}
+
+func (w *Worker) callPythonCompress(ctx context.Context, req compressRequest) (map[string]any, error) {
+	b, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	u, _ := url.Parse(w.cfg.PythonServiceURL)
+	u.Path = "/compress"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := w.client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("python /compress: status %d: %s", resp.StatusCode, body)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("python /compress: unmarshal: %w", err)
+	}
+	return result, nil
+}
+
+// buildRawText assembles a human-readable summary of the observation for Python.
+func buildRawText(obs *state.ObservationRow) string {
+	if obs.ToolOutput != "" {
+		if obs.ToolName != "" {
+			return obs.ToolName + ": " + obs.ToolOutput
+		}
+		return obs.ToolOutput
+	}
+	if obs.UserPrompt != "" {
+		return obs.UserPrompt
+	}
+	if obs.RawJSON != "" {
+		return obs.RawJSON
+	}
+	return obs.HookType
 }
 
 func (w *Worker) pingPython(ctx context.Context) error {
