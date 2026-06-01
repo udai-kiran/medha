@@ -19,15 +19,6 @@
             "command": "/home/udai/work/my-agent-memory/.claude/hooks/observe-tool.sh"
           }
         ]
-      },
-      {
-        "matcher": "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-tool-hook"
-          }
-        ]
       }
     ],
     "Notification": [
@@ -38,14 +29,6 @@
             "command": "/home/udai/work/my-agent-memory/.claude/hooks/notify.sh"
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-notify-hook"
-          }
-        ]
       }
     ],
     "Stop": [
@@ -54,14 +37,6 @@
           {
             "type": "command",
             "command": "/home/udai/work/my-agent-memory/.claude/hooks/session-end.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-session-end-hook"
           }
         ]
       }

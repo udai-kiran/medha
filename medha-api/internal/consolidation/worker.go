@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/udai-kiran/medha/internal/state"
@@ -70,13 +71,18 @@ func (w *Worker) Handle(ctx context.Context, j Job) error {
 }
 
 // compressRequest is the body for Python POST /compress.
+// ToolInput and ToolOutput mirror Python's RawObservation aliases (toolInput /
+// toolOutput) so the LLM prompt is populated with the actual command and its
+// result rather than receiving empty <input>/<output> blocks.
 type compressRequest struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId"`
-	HookType  string `json:"hookType"`
-	ToolName  string `json:"toolName,omitempty"`
-	RawText   string `json:"rawText"`
-	Timestamp string `json:"timestamp"`
+	ID         string         `json:"id"`
+	SessionID  string         `json:"sessionId"`
+	HookType   string         `json:"hookType"`
+	ToolName   string         `json:"toolName,omitempty"`
+	ToolInput  map[string]any `json:"toolInput,omitempty"`
+	ToolOutput string         `json:"toolOutput,omitempty"`
+	RawText    string         `json:"rawText"`
+	Timestamp  string         `json:"timestamp"`
 }
 
 func (w *Worker) handleCompress(ctx context.Context, j Job) error {
@@ -98,14 +104,21 @@ func (w *Worker) handleCompress(ctx context.Context, j Job) error {
 		return err
 	}
 
+	var toolInput map[string]any
+	if obs.ToolInputJSON != "" {
+		_ = json.Unmarshal([]byte(obs.ToolInputJSON), &toolInput)
+	}
+
 	rawText := buildRawText(obs)
 	req := compressRequest{
-		ID:        obs.ID,
-		SessionID: obs.SessionID,
-		HookType:  obs.HookType,
-		ToolName:  obs.ToolName,
-		RawText:   rawText,
-		Timestamp: obs.CreatedAt.UTC().Format(time.RFC3339),
+		ID:         obs.ID,
+		SessionID:  obs.SessionID,
+		HookType:   obs.HookType,
+		ToolName:   obs.ToolName,
+		ToolInput:  toolInput,
+		ToolOutput: obs.ToolOutput,
+		RawText:    rawText,
+		Timestamp:  obs.CreatedAt.UTC().Format(time.RFC3339),
 	}
 
 	compressed, err := w.callPythonCompress(ctx, req)
@@ -152,15 +165,25 @@ func (w *Worker) callPythonCompress(ctx context.Context, req compressRequest) (m
 }
 
 // buildRawText assembles a human-readable summary of the observation for Python.
+// It is used as a secondary context field (rawText); the primary fields
+// toolInput / toolOutput are now sent separately so the LLM prompt has
+// structured input rather than a flat blob.
 func buildRawText(obs *state.ObservationRow) string {
+	var parts []string
+	if obs.ToolName != "" {
+		parts = append(parts, "Tool: "+obs.ToolName)
+	}
+	if obs.ToolInputJSON != "" && obs.ToolInputJSON != "{}" && obs.ToolInputJSON != "null" {
+		parts = append(parts, "Input: "+obs.ToolInputJSON)
+	}
 	if obs.ToolOutput != "" {
-		if obs.ToolName != "" {
-			return obs.ToolName + ": " + obs.ToolOutput
-		}
-		return obs.ToolOutput
+		parts = append(parts, "Output: "+obs.ToolOutput)
 	}
 	if obs.UserPrompt != "" {
-		return obs.UserPrompt
+		parts = append(parts, "Prompt: "+obs.UserPrompt)
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
 	}
 	if obs.RawJSON != "" {
 		return obs.RawJSON

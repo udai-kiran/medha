@@ -364,11 +364,12 @@ type memoryRow struct {
 // per-concept Memories. Real LLM clustering (semantic) is Task 27 / future
 // work; this baseline gives us a navigable memory store immediately.
 // hasSubstantiveContent returns true if the summary describes work worth
-// remembering: at least one file was modified, a key decision was made, or
-// two or more distinct concepts were discussed. Sessions with only empty or
-// trivial tool invocations fail this test and are not distilled into memories.
+// remembering: at least one file was modified or a key decision was made.
+// Concepts alone are not sufficient — an LLM will generate concept tags
+// (e.g. "empty_session", "tool_invocations") even for sessions with no real
+// work, which would otherwise produce noise memories.
 func hasSubstantiveContent(s *sessionSummary) bool {
-	return len(s.FilesModified) > 0 || len(s.KeyDecisions) > 0 || len(s.Concepts) >= 2
+	return len(s.FilesModified) > 0 || len(s.KeyDecisions) > 0
 }
 
 func distilMemories(obs []*state.ObservationRow, summary *sessionSummary) []memoryRow {
