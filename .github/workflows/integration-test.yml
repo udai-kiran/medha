@@ -19,9 +19,9 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Compose up (lightweight: no Neo4j)
+      - name: "Compose up (lightweight: no Neo4j)"
         run: |
           cp .env.example .env
           docker compose -f docker-compose.yml -f deploy/docker-compose.lightweight.yml up -d --build
