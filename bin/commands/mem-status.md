@@ -1,0 +1,1 @@
+Call mcp__agent-mem__status with no arguments and display the result: schema version, session count, observation count, memory count. Then call mcp__agent-mem__diagnose and surface any warnings or failures. Keep the output concise.

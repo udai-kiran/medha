@@ -16,7 +16,7 @@ TARGET="${1:-$(pwd)}"
 TARGET="$(cd "$TARGET" && pwd)"
 
 HOOKS_SRC="$SCRIPT_DIR"
-CMDS_SRC="$SOURCE_DIR/.claude/commands"
+CMDS_SRC="$SCRIPT_DIR/commands"
 
 HOOKS_DST="$TARGET/.claude/hooks"
 CMDS_DST="$TARGET/.claude/commands"
