@@ -37,7 +37,7 @@ func connect(ctx context.Context, t *testing.T, srv *sdkmcp.Server) *sdkmcp.Clie
 	if err != nil {
 		t.Fatal("client.Connect:", err)
 	}
-	t.Cleanup(func() { cs.Close() })
+	t.Cleanup(func() { _ = cs.Close() })
 	return cs
 }
 

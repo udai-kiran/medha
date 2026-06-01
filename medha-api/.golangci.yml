@@ -18,9 +18,9 @@ linters:
       min-complexity: 85
     revive:
       rules:
-        - name: exported
         - name: blank-imports
         - name: redefines-builtin-id
         - name: var-naming
+        # exported is disabled: all packages are internal; godoc comments add noise.
         # unused-parameter is disabled: HTTP handlers and interface implementations
         # must match their signature even when some params are unused.

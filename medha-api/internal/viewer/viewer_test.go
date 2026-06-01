@@ -128,7 +128,7 @@ func TestHandler_StreamWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	defer func() { _ = c.Close() }()
 

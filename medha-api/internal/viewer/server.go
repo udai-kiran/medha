@@ -86,7 +86,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/", "/index.html":
 		h.serveDashboard(w, r)
 	case "/health":
-		_, _ = w.Write([]byte(fmt.Sprintf(`{"status":"ok","subscribers":%d}`, h.Hub.SubscriberCount())))
+		_, _ = fmt.Fprintf(w, `{"status":"ok","subscribers":%d}`, h.Hub.SubscriberCount())
 	case "/api/projects":
 		h.serveProjects(w, r)
 	case "/api/sessions":
