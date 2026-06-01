@@ -1,5 +1,6 @@
+version: "2"
+
 linters:
-  enable-all: false
   enable:
     - bodyclose
     - errcheck
@@ -10,22 +11,16 @@ linters:
     - staticcheck
     - unused
 
-linters-settings:
-  gocyclo:
-    # Dispatch/registration functions like RegisterMemoryTools are inherently
-    # complex; 85 gives room for large switch-style routers without noise.
-    min-complexity: 85
-  revive:
-    rules:
-      - name: exported
-      - name: blank-imports
-      - name: redefines-builtin-id
-      - name: var-naming
-      # unused-parameter is disabled: HTTP handlers and interface implementations
-      # must match their signature even when some params are unused.
-
-issues:
-  exclude-rules:
-    # Test files don't need the same strictness.
-    - path: "_test\\.go"
-      linters: [gocyclo]
+  settings:
+    gocyclo:
+      # Dispatch/registration functions like RegisterMemoryTools are inherently
+      # complex; 85 gives room for large switch-style routers without noise.
+      min-complexity: 85
+    revive:
+      rules:
+        - name: exported
+        - name: blank-imports
+        - name: redefines-builtin-id
+        - name: var-naming
+        # unused-parameter is disabled: HTTP handlers and interface implementations
+        # must match their signature even when some params are unused.
