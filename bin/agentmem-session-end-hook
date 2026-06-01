@@ -47,9 +47,14 @@ if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ]; then
 fi
 AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
 
-PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
-_BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)
-PROJECT="${PROJECT}${_BRANCH:+/$_BRANCH}"
+_REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null || true)
+_BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+if [ -n "$_REMOTE" ] && [ -n "$_BRANCH" ]; then
+    PROJECT="${_REMOTE}__${_BRANCH}"
+else
+    PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
+    PROJECT="${PROJECT}${_BRANCH:+__$_BRANCH}"
+fi
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 PAYLOAD=$(jq -cn \
