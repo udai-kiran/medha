@@ -12,10 +12,10 @@ register routers under the same app:
 
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
+import structlog
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
@@ -36,8 +36,6 @@ from medha.llm import build_llm_client
 from medha.models import CompressedObservation, Entity, RawObservation, Relationship
 from medha.summarization import ObservationDigest
 from medha.summarization.session import SessionSummarizer, SessionSummarizerConfig, SessionSummary
-import structlog
-
 from medha.utils.logging import configure_logging
 
 logger = structlog.get_logger(__name__)
