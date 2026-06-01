@@ -28,10 +28,11 @@ type Config struct {
 	PostgresSSLMode  string
 
 	// Neo4j (optional — see ADR-0003)
-	Neo4jEnabled  bool
-	Neo4jURI      string
-	Neo4jUsername string
-	Neo4jPassword string
+	Neo4jEnabled   bool
+	Neo4jURI       string
+	Neo4jUsername  string
+	Neo4jPassword  string
+	Neo4jDatabase  string
 
 	// Async queue — see ADR-0001
 	QueueBackend string // rabbitmq | memory
@@ -82,6 +83,7 @@ func FromEnv() *Config {
 		Neo4jURI:                getString("NEO4J_URI", "bolt://localhost:7687"),
 		Neo4jUsername:           getString("NEO4J_USERNAME", "neo4j"),
 		Neo4jPassword:           getString("NEO4J_PASSWORD", ""),
+		Neo4jDatabase:           getString("NEO4J_DATABASE", "medha"),
 		QueueBackend:            getString("QUEUE_BACKEND", "memory"),
 		RabbitMQURL:             getString("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		PythonServiceURL:        getString("PYTHON_SERVICE_URL", "http://localhost:5000"),

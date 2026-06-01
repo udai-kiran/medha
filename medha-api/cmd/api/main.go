@@ -125,6 +125,7 @@ func main() {
 			URI:      cfg.Neo4jURI,
 			Username: cfg.Neo4jUsername,
 			Password: cfg.Neo4jPassword,
+			Database: cfg.Neo4jDatabase,
 			Logger:   logger,
 		})
 		if err != nil {

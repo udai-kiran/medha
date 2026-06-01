@@ -17,8 +17,14 @@ import (
 // Cypher queries we need are small and the heavy lifting (rank fusion,
 // hybrid search) stays in Go.
 type Store struct {
-	driver neo4j.DriverWithContext
-	Logger *slog.Logger
+	driver   neo4j.DriverWithContext
+	database string
+	Logger   *slog.Logger
+}
+
+// sessionCfg returns the SessionConfig targeting the configured database.
+func (s *Store) sessionCfg() neo4j.SessionConfig {
+	return neo4j.SessionConfig{DatabaseName: s.database}
 }
 
 // Config is the connection config for the Neo4j store.
@@ -26,6 +32,7 @@ type Config struct {
 	URI      string
 	Username string
 	Password string
+	Database string // defaults to "medha" when empty
 	Logger   *slog.Logger
 }
 
@@ -50,7 +57,11 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		_ = drv.Close(ctx)
 		return nil, fmt.Errorf("graph.Open: connectivity: %w", err)
 	}
-	s := &Store{driver: drv, Logger: cfg.Logger}
+	db := cfg.Database
+	if db == "" {
+		db = "medha"
+	}
+	s := &Store{driver: drv, database: db, Logger: cfg.Logger}
 	if err := s.ensureIndexes(ctx); err != nil {
 		s.Logger.Warn("graph.ensure_indexes_failed", "err", err)
 	}
@@ -75,7 +86,7 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		`CREATE INDEX entity_project IF NOT EXISTS
             FOR (e:Entity) ON (e.project)`,
 	}
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := s.driver.NewSession(ctx, s.sessionCfg())
 	defer func() { _ = session.Close(ctx) }()
 	for _, q := range queries {
 		if _, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
@@ -117,7 +128,7 @@ func (s *Store) UpsertEntity(ctx context.Context, e Entity) error {
 	if e.Extra != nil {
 		params["extra"] = e.Extra
 	}
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := s.driver.NewSession(ctx, s.sessionCfg())
 	defer func() { _ = session.Close(ctx) }()
 
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
@@ -161,7 +172,7 @@ func (s *Store) AddEdge(ctx context.Context, e Edge) error {
 		"src": e.SourceID, "tgt": e.TargetID,
 		"conf": e.Confidence, "obs": e.SourceObservationID,
 	}
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := s.driver.NewSession(ctx, s.sessionCfg())
 	defer func() { _ = session.Close(ctx) }()
 	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		_, err := tx.Run(ctx, q, params)
@@ -186,7 +197,7 @@ func (s *Store) Neighbours(ctx context.Context, project, name string, depth, lim
         WHERE n.id <> e.id
         RETURN DISTINCT n LIMIT $limit
     `, depth)
-	session := s.driver.NewSession(ctx, neo4j.SessionConfig{})
+	session := s.driver.NewSession(ctx, s.sessionCfg())
 	defer func() { _ = session.Close(ctx) }()
 	res, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		rows, err := tx.Run(ctx, q, map[string]any{"project": project, "name": name, "limit": limit})
