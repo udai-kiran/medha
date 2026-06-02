@@ -1,13 +1,10 @@
-Manage goals using the medha action system. Parse $ARGUMENTS as follows:
+Set or inspect a goal. The medha harness hooks will automatically record your progress, observe tool use, and consolidate memory at session end — you don't need to do anything extra.
 
-**No argument or "list":** Call mcp__agent-mem__frontier (project = current project if known) to list all ready goals. Display them as a numbered list with ID, title, and status. If the frontier is empty, say so.
+Parse $ARGUMENTS:
 
-**"next":** Call mcp__agent-mem__next-action to get the single highest-priority unblocked goal. Display its title, description, and ID.
-
-**"done <id>":** Extract the action ID from $ARGUMENTS. Call mcp__agent-mem__action-update with that ID and status="completed". Confirm with the goal title.
-
-**"crystallize <id1> <id2> ...":** Extract the IDs. Call mcp__agent-mem__crystallize with those actionIds to compact them into a single summary action. Show the crystallized action ID and title.
-
-**Any other text:** Treat $ARGUMENTS as a new goal. Call mcp__agent-mem__action-create with the text as `title`, status="pending". Show the new action ID. Then call mcp__agent-mem__remember with the same text as content, type="project", so the goal also enters long-term memory.
+- **Empty or "list":** Call mcp__agent-mem__frontier to show all ready goals. Display as a numbered list with ID and title.
+- **"next":** Call mcp__agent-mem__next-action. Display the returned goal and start working toward it.
+- **"done <id>":** Call mcp__agent-mem__action-update with status="completed" for that action ID. Confirm.
+- **Any other text:** Call mcp__agent-mem__action-create with the text as `title` and status="pending". Then call mcp__agent-mem__get-context with the text as `query` to surface relevant past memories as background. Start working — the hooks will take it from here.
 
 Arguments: $ARGUMENTS
