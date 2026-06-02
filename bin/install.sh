@@ -44,16 +44,16 @@ done
 ok "Hooks copied"
 
 # ── 2. copy slash commands ──────────────────────────────────────────────────
-if [ -d "$CMDS_SRC" ] && ls "$CMDS_SRC"/mem-*.md >/dev/null 2>&1; then
+if [ -d "$CMDS_SRC" ] && ls "$CMDS_SRC"/*.md >/dev/null 2>&1; then
     info "Installing commands → $CMDS_DST"
     mkdir -p "$CMDS_DST"
-    for cmd in "$CMDS_SRC"/mem-*.md; do
+    for cmd in "$CMDS_SRC"/*.md; do
         dst_cmd="$CMDS_DST/$(basename "$cmd")"
         [ "$cmd" -ef "$dst_cmd" ] || cp "$cmd" "$dst_cmd"
     done
     ok "Commands copied"
 else
-    warn "No mem-*.md commands found in $CMDS_SRC — skipping"
+    warn "No *.md commands found in $CMDS_SRC — skipping"
 fi
 
 # ── 3. merge hooks into settings.json ──────────────────────────────────────
