@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,18 +29,23 @@ import (
 func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 	store := testutil.OpenStore(t)
 
-	bm25, err := search.NewBM25(context.Background(), store)
+	fts, err := search.NewPgFTS(context.Background(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	graphIdx := search.NewGraphIndex(store)
+
+	// Unique project and session so shared-DB test runs don't contaminate each other.
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	project := "e2e-" + suffix
+	sessID := "sess-e2e-" + suffix
 
 	// Fake Python: synthesise summaries from inbound digests.
 	pyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/summarize":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sessionId": "sess-e2e", "title": "Implemented JWT auth",
+				"sessionId": sessID, "title": "Implemented JWT auth",
 				"narrative": "Added jose-based JWT middleware.",
 				"keyDecisions": []string{"Use jose for JWT validation"},
 				"filesModified": []string{"src/auth.ts"},
@@ -51,12 +57,12 @@ func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 	}))
 	defer pyServer.Close()
 
-	hybrid := &search.Hybrid{BM25: bm25, Graph: graphIdx, K: 60}
+	hybrid := &search.Hybrid{FTS: fts, Graph: graphIdx, K: 60}
 	pipeline := consolidation.NewPipeline(store, pyServer.URL, nil)
 
 	// Wire the router with everything turned on except auth (empty secret).
 	indexBus := indexBusFn(func(ctx context.Context, observationID, project, text string) error {
-		return bm25.Index(ctx, observationID, project, text)
+		return fts.Index(ctx, observationID, project, text)
 	})
 	deps := RouterDeps{
 		Observe: ObserveDeps{
@@ -93,8 +99,8 @@ func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 	for i, o := range observations {
 		body, _ := json.Marshal(map[string]any{
 			"hookType":  "post_tool_use",
-			"sessionId": "sess-e2e",
-			"project":   "demo",
+			"sessionId": sessID,
+			"project":   project,
 			"timestamp": time.Now().UTC().Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
 			"data": map[string]any{
 				"tool_name":   "read",
@@ -102,7 +108,7 @@ func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 				"tool_output": o.toolOutput,
 			},
 		})
-		req := httptest.NewRequest(http.MethodPost, "/agentmemory/observe", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/agentmemory/observe", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, req)
@@ -125,7 +131,7 @@ func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 			title = "Run " + cmd
 		}
 		body, _ := json.Marshal(CompressedCallback{
-			ID: id, SessionID: "sess-e2e",
+			ID: id, SessionID: sessID,
 			Type: "file_read", Title: title,
 			Narrative: observations[i].toolOutput, Importance: 7, Confidence: 0.8,
 			Concepts: []string{"auth", "jwt"},
@@ -141,10 +147,12 @@ func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 	}
 
 	// Phase 3: smart-search should find the JWT-related observations.
+	// Use "auth jwt" so websearch_to_tsquery produces 'auth' & 'jwt', both of
+	// which are present in the concept tags of the file-read observations.
 	searchBody, _ := json.Marshal(map[string]any{
-		"project": "demo", "query": "JWT validation", "mode": "bm25", "limit": 10,
+		"project": project, "query": "auth jwt", "mode": "bm25", "limit": 10,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/agentmemory/smart-search", bytes.NewReader(searchBody))
+	req := httptest.NewRequest(http.MethodPost, "/v1/agentmemory/smart-search", bytes.NewReader(searchBody))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -165,11 +173,11 @@ func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 	// Phase 4: end the session, expect a memory to land.
 	endBody, _ := json.Marshal(map[string]any{
 		"hookType":  "session_end",
-		"sessionId": "sess-e2e",
+		"sessionId": sessID,
 		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
 		"data":      map[string]any{},
 	})
-	req = httptest.NewRequest(http.MethodPost, "/agentmemory/observe", bytes.NewReader(endBody))
+	req = httptest.NewRequest(http.MethodPost, "/v1/agentmemory/observe", bytes.NewReader(endBody))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -179,7 +187,7 @@ func TestE2E_CaptureCompressSearchConsolidate(t *testing.T) {
 
 	// Consolidation runs inline (NoOpSessionEndHandler does not apply here —
 	// the pipeline runs synchronously before /observe returns).
-	req = httptest.NewRequest(http.MethodGet, "/agentmemory/memories?project=demo&limit=10", nil)
+	req = httptest.NewRequest(http.MethodGet, "/v1/agentmemory/memories?project="+project+"&limit=10", nil)
 	w2 := httptest.NewRecorder()
 	h.ServeHTTP(w2, req)
 	if w2.Code != http.StatusOK {

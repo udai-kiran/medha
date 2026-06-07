@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -14,7 +18,11 @@ import (
 
 // MemoryAPI groups handlers for /agentmemory/memories, /remember, /forget.
 type MemoryAPI struct {
-	Store *state.Store
+	Store         *state.Store
+	PythonBaseURL string
+	// Indexer, if non-nil, puts user memories into the FTS index so they appear
+	// in smart-search and recall-summary results with the "user" provenance boost.
+	Indexer IndexBus
 }
 
 // Register attaches memory routes.
@@ -25,53 +33,141 @@ func (a MemoryAPI) Register(r chi.Router) {
 	r.Post("/forget", a.Forget)
 }
 
-// RememberRequest writes a new Memory row from a JSON body.
+// RememberRequest is the NLQ entry point for user-authored memories.
+// Only `content` is required — the user writes what they know in plain language.
+// `type` and `concepts` are optional overrides; when absent they are derived by
+// calling the Python /extract-memory endpoint. Title is no longer part of the API.
 type RememberRequest struct {
-	Project              string   `json:"project,omitempty"`
-	Type                 string   `json:"type"`
-	Tier                 string   `json:"tier,omitempty"`
-	Title                string   `json:"title"`
-	Content              string   `json:"content"`
-	Concepts             []string `json:"concepts,omitempty"`
-	Files                []string `json:"files,omitempty"`
-	SessionIDs           []string `json:"sessionIds,omitempty"`
-	SourceObservationIDs []string `json:"sourceObservationIds,omitempty"`
-	Strength             float64  `json:"strength,omitempty"`
+	Project  string   `json:"project,omitempty"`
+	Content  string   `json:"content"`           // NLQ — required
+	Type     string   `json:"type,omitempty"`    // optional override
+	Tier     string   `json:"tier,omitempty"`    // optional override
+	Concepts []string `json:"concepts,omitempty"` // optional override
+	Files    []string `json:"files,omitempty"`    // optional
 }
 
-// Remember persists a new memory; returns the assigned id.
+// RememberResponse is returned on successful memory creation.
+type RememberResponse struct {
+	MemoryID string `json:"memoryId"`
+	// Extracted fields echoed back so the caller can inspect what the LLM derived.
+	Type     string   `json:"type"`
+	Concepts []string `json:"concepts"`
+}
+
+// extractedMemory is the shape returned by Python /extract-memory.
+type extractedMemory struct {
+	Type              string   `json:"type"`
+	NormalizedContent string   `json:"normalized_content"`
+	Concepts          []string `json:"concepts"`
+	Facts             []string `json:"facts"`
+}
+
+// extractMemory calls Python /extract-memory to derive structure from NLQ text.
+// Returns a best-effort result on any error (never fails the remember path).
+func (a MemoryAPI) extractMemory(r *http.Request, content string) extractedMemory {
+	fallback := extractedMemory{
+		Type:              "fact",
+		NormalizedContent: content,
+	}
+	if a.PythonBaseURL == "" {
+		return fallback
+	}
+	body, _ := json.Marshal(map[string]string{"content": content})
+	url := strings.TrimRight(a.PythonBaseURL, "/") + "/extract-memory"
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fallback
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fallback
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fallback
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var out extractedMemory
+	if err := json.Unmarshal(raw, &out); err != nil || out.Type == "" {
+		return fallback
+	}
+	return out
+}
+
+// Remember persists a user-authored memory from a natural language query.
 func (a MemoryAPI) Remember(w http.ResponseWriter, r *http.Request) {
 	var req RememberRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
 		return
 	}
-	if req.Title == "" || req.Type == "" {
-		WriteError(w, http.StatusBadRequest, "validation_failed", "type and title required")
+	if strings.TrimSpace(req.Content) == "" {
+		WriteError(w, http.StatusBadRequest, "validation_failed", "content is required")
 		return
 	}
-	if req.Tier == "" {
-		req.Tier = state.TierSemantic
+
+	memType := req.Type
+	concepts := req.Concepts
+	content := req.Content
+
+	// Derive structure via LLM when not explicitly provided.
+	if memType == "" {
+		extracted := a.extractMemory(r, content)
+		memType = extracted.Type
+		if extracted.NormalizedContent != "" {
+			content = extracted.NormalizedContent
+		}
+		if len(concepts) == 0 {
+			concepts = extracted.Concepts
+		}
 	}
+
+	tier := req.Tier
+	if tier == "" {
+		tier = state.TierSemantic
+	}
+
+	// Title is derived from content (first 80 chars) — kept for the DB column
+	// but not exposed in the API request shape.
+	title := content
+	if len(title) > 80 {
+		if idx := strings.LastIndex(title[:80], " "); idx > 40 {
+			title = title[:idx]
+		} else {
+			title = title[:80]
+		}
+	}
+
 	id := "mem-" + randHex(8)
 	row := &state.MemoryRow{
-		ID:                   id,
-		Project:              req.Project,
-		Type:                 req.Type,
-		Tier:                 req.Tier,
-		Title:                req.Title,
-		Content:              req.Content,
-		Concepts:             req.Concepts,
-		Files:                req.Files,
-		SessionIDs:           req.SessionIDs,
-		SourceObservationIDs: req.SourceObservationIDs,
-		Strength:             req.Strength,
+		ID:         id,
+		Project:    req.Project,
+		Type:       memType,
+		Tier:       tier,
+		Provenance: state.ProvenanceUser,
+		Title:      title,
+		Content:    content,
+		Concepts:   concepts,
+		Files:      req.Files,
+		Strength:   1.0,
 	}
 	if err := a.Store.InsertMemory(r.Context(), row); err != nil {
 		WriteError(w, http.StatusInternalServerError, "persist_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"memoryId": id})
+	// Index the user memory so it appears in smart-search/recall-summary.
+	// Carries the "user" provenance label for priority boosting. Best-effort.
+	if a.Indexer != nil {
+		indexText := title + " " + content + " " + strings.Join(concepts, " ")
+		_ = a.Indexer.IndexMemory(r.Context(), id, req.Project, indexText, state.ProvenanceUser)
+	}
+	writeJSON(w, http.StatusCreated, RememberResponse{
+		MemoryID: id,
+		Type:     memType,
+		Concepts: concepts,
+	})
 }
 
 // Get returns a single memory by id; marks it as retrieved (for decay reinforcement).

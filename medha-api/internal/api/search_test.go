@@ -17,15 +17,15 @@ import (
 	"github.com/udai-kiran/medha/internal/testutil"
 )
 
-func newSearchRouter(t *testing.T) (http.Handler, *state.Store, *search.BM25) {
+func newSearchRouter(t *testing.T) (http.Handler, *state.Store, *search.PgFTS) {
 	t.Helper()
 	store := testutil.OpenStore(t)
 
-	bm25, err := search.NewBM25(context.Background(), store)
+	fts, err := search.NewPgFTS(context.Background(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hybrid := &search.Hybrid{BM25: bm25, K: 60}
+	hybrid := &search.Hybrid{FTS: fts, K: 60}
 
 	deps := RouterDeps{
 		Observe: ObserveDeps{
@@ -37,11 +37,11 @@ func newSearchRouter(t *testing.T) (http.Handler, *state.Store, *search.BM25) {
 		},
 		Search: SearchDeps{Hybrid: hybrid, Store: store},
 	}
-	return NewRouter(config.FromEnv(), deps), store, bm25
+	return NewRouter(config.FromEnv(), deps), store, fts
 }
 
 func TestSmartSearch_Roundtrip(t *testing.T) {
-	h, store, bm25 := newSearchRouter(t)
+	h, store, fts := newSearchRouter(t)
 	ctx := context.Background()
 	_, _ = store.EnsureSession(ctx, "sess-1", "p", "/tmp")
 
@@ -59,11 +59,11 @@ func TestSmartSearch_Roundtrip(t *testing.T) {
 			Type: "file_read", Title: "Read", Narrative: narrative,
 			Importance: 5, Confidence: 0.8,
 		})
-		_ = bm25.Index(ctx, id, "p", narrative)
+		_ = fts.Index(ctx, id, "p", narrative)
 	}
 
 	body, _ := json.Marshal(SmartSearchRequest{Project: "p", Query: "JWT authentication", Mode: "bm25", Limit: 5})
-	req := httptest.NewRequest(http.MethodPost, "/agentmemory/smart-search", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/agentmemory/smart-search", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -105,7 +105,7 @@ func TestSmartSearch_Validation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/agentmemory/smart-search", bytes.NewReader([]byte(c.body)))
+			req := httptest.NewRequest(http.MethodPost, "/v1/agentmemory/smart-search", bytes.NewReader([]byte(c.body)))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, req)

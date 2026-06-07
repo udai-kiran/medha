@@ -286,6 +286,333 @@ async def enrich(req: EnrichRequest) -> EnrichResponse:
     return EnrichResponse(fields=res.fields, source=res.source, cached=res.cached)
 
 
+_EXTRACT_MEMORY_SYSTEM_PROMPT = """You extract structure from a user's natural language memory note for a software engineering agent.
+
+Given the raw note, produce:
+- type: one of architecture|pattern|preference|bug|workflow|fact
+- normalized_content: restate the note as a clear, complete sentence or two
+- concepts: 3-5 lowercase technical terms or proper nouns (tool names, language features, patterns)
+- facts: any specific concrete assertions (can be empty)
+
+Type guidance:
+- architecture: design decisions, component structure, technology choices
+- pattern: recurring code or design patterns observed
+- preference: user/team coding style or tool preferences
+- bug: identified defects and their root causes
+- workflow: process steps, commands, development flows
+- fact: any other concrete piece of information
+
+Return JSON only. Example:
+{"type":"architecture","normalized_content":"JWT validation uses the jose library in src/auth.ts middleware.","concepts":["jwt","jose","middleware","authentication"],"facts":["jose library handles token validation"]}"""
+
+
+class ExtractMemoryRequest(BaseModel):
+    """Body for POST /extract-memory."""
+
+    content: str
+
+
+class ExtractedMemory(BaseModel):
+    type: str
+    normalized_content: str
+    concepts: list[str] = Field(default_factory=list)
+    facts: list[str] = Field(default_factory=list)
+
+
+_VALID_MEMORY_TYPES = {"architecture", "pattern", "preference", "bug", "workflow", "fact"}
+
+
+@app.post("/extract-memory", response_model=ExtractedMemory)
+async def extract_memory_nlq(req: ExtractMemoryRequest) -> ExtractedMemory:
+    """Extract structured memory fields from a natural language note via LLM.
+
+    Falls back to type=fact with the content as-is when LLM is unavailable.
+    """
+    import asyncio
+    import json as _json
+    import re as _re
+
+    settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
+    client = build_llm_client(settings.resolve_stage_model("compress"), settings)
+
+    if client is not None:
+        try:
+            response = await asyncio.wait_for(
+                client.complete(
+                    system=_EXTRACT_MEMORY_SYSTEM_PROMPT,
+                    user=f"Note: {req.content}",
+                ),
+                timeout=15.0,
+            )
+            text = response.strip()
+            if "```" in text:
+                text = _re.sub(r"```(?:json)?\n?", "", text).strip().rstrip("`")
+            data = _json.loads(text)
+            mem_type = data.get("type", "fact")
+            if mem_type not in _VALID_MEMORY_TYPES:
+                mem_type = "fact"
+            normalized = data.get("normalized_content", req.content).strip() or req.content
+            concepts = [str(c).lower().strip() for c in data.get("concepts", []) if c][:6]
+            facts = [str(f).strip() for f in data.get("facts", []) if f][:10]
+            requests_total.labels(route="/extract-memory", status="200").inc()
+            return ExtractedMemory(
+                type=mem_type,
+                normalized_content=normalized,
+                concepts=concepts,
+                facts=facts,
+            )
+        except Exception:
+            logger.debug("extract-memory LLM failed, using fallback", exc_info=True)
+
+    # Synthetic fallback: guess type as fact, extract words as concepts.
+    words = [w.lower() for w in _re.findall(r"\b[a-zA-Z][a-zA-Z0-9_.-]{2,}\b", req.content)]
+    seen: dict[str, None] = {}
+    for w in words:
+        seen.setdefault(w, None)
+    concepts = list(seen.keys())[:5]
+    requests_total.labels(route="/extract-memory", status="200").inc()
+    return ExtractedMemory(type="fact", normalized_content=req.content, concepts=concepts)
+
+
+_RECALL_SUMMARY_SYSTEM_PROMPT = """You are an AI coding assistant's memory system.
+
+Summarize the recalled memory snippets below into a concise 2-4 sentence context paragraph.
+Focus on facts, decisions, and patterns that are directly relevant to the current query.
+Be specific — mention file names, tool names, and concrete decisions when present.
+Do not repeat the query back. Do not use bullet points. Plain prose only."""
+
+
+class RecallMemoryItem(BaseModel):
+    title: str = ""
+    snippet: str = ""
+    type: str = ""
+    relevance: float = 0.0
+
+
+class SummarizeMemoriesRequest(BaseModel):
+    """Body for POST /summarize-memories."""
+
+    query: str
+    memories: list[RecallMemoryItem]
+
+
+class SummarizeMemoriesResponse(BaseModel):
+    summary: str
+
+
+@app.post("/summarize-memories", response_model=SummarizeMemoriesResponse)
+async def summarize_memories(req: SummarizeMemoriesRequest) -> SummarizeMemoriesResponse:
+    """Condense recalled search results into a single context paragraph via LLM.
+
+    Falls back to a bullet-joined title list when the LLM is unavailable.
+    """
+    import asyncio
+
+    if not req.memories:
+        requests_total.labels(route="/summarize-memories", status="200").inc()
+        return SummarizeMemoriesResponse(summary="")
+
+    settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
+    client = build_llm_client(settings.resolve_stage_model("summarize"), settings)
+
+    # Build user message listing the memories.
+    mem_lines = []
+    for i, m in enumerate(req.memories, 1):
+        line = f"{i}. [{m.type or 'memory'}] {m.title}"
+        if m.snippet:
+            line += f" — {m.snippet}"
+        mem_lines.append(line)
+
+    user_msg = f"Query: {req.query}\n\nRecalled memories:\n" + "\n".join(mem_lines)
+
+    if client is not None:
+        try:
+            summary = await asyncio.wait_for(
+                client.complete(system=_RECALL_SUMMARY_SYSTEM_PROMPT, user=user_msg),
+                timeout=15.0,
+            )
+            summary = summary.strip()
+            if summary:
+                requests_total.labels(route="/summarize-memories", status="200").inc()
+                return SummarizeMemoriesResponse(summary=summary)
+        except Exception:
+            logger.debug("summarize-memories LLM failed, using fallback", exc_info=True)
+
+    # Synthetic fallback: join titles as bullets.
+    bullets = "\n".join(
+        f"• {m.title}" + (f": {m.snippet}" if m.snippet else "")
+        for m in req.memories
+        if m.title
+    )
+    requests_total.labels(route="/summarize-memories", status="200").inc()
+    return SummarizeMemoriesResponse(summary=bullets)
+
+
+_TSQUERY_SYSTEM_PROMPT = """You are a query compiler for PostgreSQL ts_query fulltext search.
+
+Your task: Generate 2-3 focused ts_query strings that are SELF-CONTAINED and MEANINGFUL.
+
+CRITICAL RULES:
+1. EACH QUERY MUST BE MEANINGFUL ON ITS OWN — never create generic queries without context
+2. MULTI-WORD PHRASE SYNTAX: Use <-> for exact phrases: "(word1 <-> word2)"
+3. KEEP QUERIES SIMPLE: 2-3 terms per query maximum
+4. Use & to combine terms, | for synonyms, parentheses to group
+5. LOWERCASE EVERYTHING
+
+EXAMPLES:
+Input: "JWT authentication token validation"
+Output: {"queries": ["jwt & authentication", "token & validation"]}
+
+Input: "rate limiting middleware configuration"
+Output: {"queries": ["(rate <-> limiting) | ratelimit", "middleware & configuration"]}
+
+Input: "database connection pool exhaustion debugging"
+Output: {"queries": ["(connection <-> pool) | pool", "pool & (exhaustion | timeout | leak)"]}
+
+Input: "React state management context API"
+Output: {"queries": ["react & (state <-> management)", "context & api"]}
+
+Return a JSON object with a "queries" array. No markdown, no explanation."""
+
+
+class TSQueryRequest(BaseModel):
+    """Body for POST /tsquery."""
+
+    query: str
+
+
+class TSQueryOutput(BaseModel):
+    """Structured output from the ts_query compiler agent."""
+
+    queries: list[str]
+
+
+@app.post("/tsquery", response_model=TSQueryOutput)
+async def tsquery(req: TSQueryRequest) -> TSQueryOutput:
+    """Convert a natural-language query to PostgreSQL ts_query strings via LLM.
+
+    Uses the configured LLM (via Bifrost) to generate 2-3 structured ts_query
+    strings. Falls back to a simple keyword query when the LLM is unavailable.
+    """
+    import asyncio
+    import json as _json
+    import re as _re
+
+    settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
+    client = build_llm_client(settings.resolve_stage_model("compress"), settings)
+
+    if client is not None:
+        try:
+            response = await asyncio.wait_for(
+                client.complete(
+                    system=_TSQUERY_SYSTEM_PROMPT,
+                    user=f'Convert to ts_query strings: "{req.query}"\n\nReturn JSON only.',
+                ),
+                timeout=15.0,
+            )
+            text = response.strip()
+            # Strip markdown code fences if the model wraps the JSON.
+            if "```" in text:
+                text = _re.sub(r"```(?:json)?\n?", "", text).strip().rstrip("`")
+            data = _json.loads(text)
+            queries = data.get("queries", [])
+            if queries and isinstance(queries, list):
+                valid = [str(q).strip() for q in queries if str(q).strip()][:3]
+                if valid:
+                    requests_total.labels(route="/tsquery", status="200").inc()
+                    return TSQueryOutput(queries=valid)
+        except Exception:
+            logger.debug("tsquery LLM failed, using fallback", exc_info=True)
+
+    # Synthetic fallback: lowercase and AND-join meaningful terms.
+    terms = [t.lower() for t in req.query.split() if len(t) > 2]
+    fallback = " & ".join(terms[:4]) if terms else req.query.lower()
+    requests_total.labels(route="/tsquery", status="200").inc()
+    return TSQueryOutput(queries=[fallback])
+
+
+class RerankRequest(BaseModel):
+    """Body for POST /rerank."""
+
+    query: str
+    documents: list[str]
+    doc_ids: list[str]
+    top_k: int = Field(default=0, description="0 means return all ranked")
+    model: str = Field(default="", description="Overrides RERANK_MODEL env var")
+
+
+class RerankResult(BaseModel):
+    id: str
+    score: float
+
+
+class RerankResponse(BaseModel):
+    results: list[RerankResult]
+
+
+@app.post("/rerank", response_model=RerankResponse)
+async def rerank(req: RerankRequest) -> RerankResponse:
+    """Rerank candidates using Cohere rerank-4-fast via Bifrost.
+
+    Falls back to identity order (RRF order preserved) when Bifrost URL is
+    unset or the model field is empty. On Bifrost error, raises HTTP 502.
+    """
+    import httpx
+
+    settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
+    model = req.model or settings.rerank_model
+
+    if not model or not settings.bifrost_url:
+        # Identity fallback: preserve input order with descending dummy scores.
+        results = [
+            RerankResult(id=doc_id, score=1.0 - i * 0.01)
+            for i, doc_id in enumerate(req.doc_ids)
+        ]
+        requests_total.labels(route="/rerank", status="200").inc()
+        return RerankResponse(results=results)
+
+    top_n = req.top_k if req.top_k > 0 else len(req.documents)
+    payload = {
+        "model": model,
+        "query": req.query,
+        "documents": req.documents,
+        "top_n": top_n,
+    }
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if settings.bifrost_api_key:
+        headers["Authorization"] = f"Bearer {settings.bifrost_api_key}"
+
+    url = f"{settings.bifrost_url.rstrip('/')}/v1/rerank"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as exc:
+        logger.error("rerank.bifrost_error", status=exc.response.status_code, err=str(exc))
+        requests_total.labels(route="/rerank", status="502").inc()
+        from fastapi import HTTPException
+        raise HTTPException(status_code=502, detail=f"Bifrost rerank error: {exc}") from exc
+    except Exception as exc:
+        logger.error("rerank.request_failed", err=str(exc))
+        requests_total.labels(route="/rerank", status="502").inc()
+        from fastapi import HTTPException
+        raise HTTPException(status_code=502, detail=f"Rerank request failed: {exc}") from exc
+
+    # Cohere/OpenRouter response: results[].{index, relevance_score}
+    # `index` is a 0-based position into the input `documents` list.
+    results: list[RerankResult] = []
+    for item in data.get("results", []):
+        idx = item.get("index")
+        score = item.get("relevance_score", 0.0)
+        if idx is not None and 0 <= idx < len(req.doc_ids):
+            results.append(RerankResult(id=req.doc_ids[idx], score=score))
+
+    results.sort(key=lambda x: x.score, reverse=True)
+    requests_total.labels(route="/rerank", status="200").inc()
+    return RerankResponse(results=results)
+
+
 @app.post("/compress", response_model=CompressedObservation)
 async def compress(raw: RawObservation) -> CompressedObservation:
     """Compress a single RawObservation via LLM (or synthetic fallback)."""

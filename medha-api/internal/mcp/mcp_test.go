@@ -17,8 +17,8 @@ import (
 func newTestServer(t *testing.T) (*sdkmcp.Server, *state.Store) {
 	t.Helper()
 	store := testutil.OpenStore(t)
-	bm25, _ := search.NewBM25(context.Background(), store)
-	hybrid := &search.Hybrid{BM25: bm25, K: 60}
+	fts, _ := search.NewPgFTS(context.Background(), store)
+	hybrid := &search.Hybrid{FTS: fts, K: 60}
 	srv := mcp.NewMemoryServer("agent_mem", "0.0.1", mcp.MemoryToolsDeps{
 		Store: store, Search: hybrid,
 	})

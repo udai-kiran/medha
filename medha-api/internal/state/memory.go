@@ -10,13 +10,21 @@ import (
 	"time"
 )
 
-// Memory tier constants. Mirrors models.MemoryTier but lives in state to
-// avoid an import cycle from migration tooling.
+// Memory tier constants.
 const (
 	TierWorking    = "working"
 	TierEpisodic   = "episodic"
 	TierSemantic   = "semantic"
 	TierProcedural = "procedural"
+)
+
+// Memory provenance constants: how a memory was created.
+// Boost order for search: user > extracted > episodic.
+const (
+	ProvenanceUser      = "user"      // explicitly authored via /remember
+	ProvenanceExtracted = "extracted" // produced by the consolidation pipeline
+	ProvenanceEpisodic  = "episodic"  // observation-derived (tool events, etc.)
+	ProvenanceSystem    = "system"    // internal or administrative writes
 )
 
 // MemoryRow is the storage shape used by the consolidation pipeline (Task 22)
@@ -26,6 +34,7 @@ type MemoryRow struct {
 	Project              string
 	Type                 string
 	Tier                 string
+	Provenance           string // ProvenanceUser | ProvenanceExtracted | ProvenanceEpisodic | ProvenanceSystem
 	Title                string
 	Content              string
 	Concepts             []string
@@ -40,13 +49,16 @@ type MemoryRow struct {
 }
 
 // InsertMemory stores a new memory row. Strength defaults to 1.0 if zero;
-// tier defaults to "semantic".
+// tier defaults to "semantic"; provenance defaults to "extracted".
 func (s *Store) InsertMemory(ctx context.Context, m *MemoryRow) error {
 	if m == nil || m.ID == "" || m.Title == "" {
 		return errors.New("InsertMemory: id and title required")
 	}
 	if m.Tier == "" {
 		m.Tier = TierSemantic
+	}
+	if m.Provenance == "" {
+		m.Provenance = ProvenanceExtracted
 	}
 	if m.Strength == 0 {
 		m.Strength = 1.0
@@ -64,11 +76,11 @@ func (s *Store) InsertMemory(ctx context.Context, m *MemoryRow) error {
 
 	_, err := s.DB.ExecContext(ctx, `
         INSERT INTO memories (
-            id, project, type, tier, title, content,
+            id, project, type, tier, provenance, title, content,
             concepts_json, files_json, session_ids_json, source_observation_ids,
             strength, is_latest, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, $12, $13)
-    `, m.ID, m.Project, m.Type, m.Tier, m.Title, m.Content,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 1, $13, $14)
+    `, m.ID, m.Project, m.Type, m.Tier, m.Provenance, m.Title, m.Content,
 		string(concepts), string(files), string(sessions), string(sources),
 		m.Strength, m.CreatedAt.Format(time.RFC3339Nano), m.UpdatedAt.Format(time.RFC3339Nano))
 	return err
@@ -77,7 +89,7 @@ func (s *Store) InsertMemory(ctx context.Context, m *MemoryRow) error {
 // GetMemory fetches a memory by id. Returns ErrNotFound if absent.
 func (s *Store) GetMemory(ctx context.Context, id string) (*MemoryRow, error) {
 	row := s.DB.QueryRowContext(ctx, `
-        SELECT id, project, type, tier, title, content,
+        SELECT id, project, type, tier, provenance, title, content,
                concepts_json, files_json, session_ids_json, source_observation_ids,
                strength, is_latest, created_at, updated_at, last_retrieved_at
         FROM memories WHERE id = $1
@@ -91,7 +103,7 @@ func (s *Store) ListMemoriesByTier(ctx context.Context, project, tier string, li
 	if limit <= 0 {
 		limit = 50
 	}
-	q := `SELECT id, project, type, tier, title, content,
+	q := `SELECT id, project, type, tier, provenance, title, content,
                  concepts_json, files_json, session_ids_json, source_observation_ids,
                  strength, is_latest, created_at, updated_at, last_retrieved_at
           FROM memories
@@ -119,14 +131,14 @@ func (s *Store) ListMemoriesByTier(ctx context.Context, project, tier string, li
 // scanMemory abstracts over *sql.Row / *sql.Rows since Scan signatures match.
 func scanMemory(scan func(dest ...any) error) (*MemoryRow, error) {
 	var (
-		m                          MemoryRow
-		concepts, files            sql.NullString
-		sessions, sources          sql.NullString
-		createdAt, updatedAt       string
-		lastRetrievedAt            sql.NullString
-		isLatestInt                int
+		m                    MemoryRow
+		concepts, files      sql.NullString
+		sessions, sources    sql.NullString
+		createdAt, updatedAt string
+		lastRetrievedAt      sql.NullString
+		isLatestInt          int
 	)
-	err := scan(&m.ID, &m.Project, &m.Type, &m.Tier, &m.Title, &m.Content,
+	err := scan(&m.ID, &m.Project, &m.Type, &m.Tier, &m.Provenance, &m.Title, &m.Content,
 		&concepts, &files, &sessions, &sources,
 		&m.Strength, &isLatestInt, &createdAt, &updatedAt, &lastRetrievedAt)
 	if err != nil {
@@ -188,7 +200,7 @@ func (s *Store) SearchMemoriesByText(ctx context.Context, project, query string,
 		limit = 10
 	}
 	pattern := "%" + strings.ToLower(query) + "%"
-	q := `SELECT id, project, type, tier, title, content,
+	q := `SELECT id, project, type, tier, provenance, title, content,
                concepts_json, files_json, session_ids_json, source_observation_ids,
                strength, is_latest, created_at, updated_at, last_retrieved_at
           FROM memories

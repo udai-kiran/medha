@@ -47,15 +47,15 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 
 	// Public, agent-facing routes. Each task's API surface registers itself
 	// here so the router file stays a directory rather than a kitchen sink.
-	r.Route("/agentmemory", func(r chi.Router) {
-		// Auth + rate limiting only on /agentmemory routes — /health and
+	r.Route("/v1/agentmemory", func(r chi.Router) {
+		// Auth + rate limiting only on /v1/agentmemory routes — /health and
 		// /metrics stay open so probes don't need credentials.
 		r.Use(BearerAuth(deps.AuthSecret))
 		r.Use(deps.RateLimiter.Middleware())
 		if deps.Observe.Store != nil {
 			r.Post("/observe", ObserveHandler(deps.Observe))
 			SessionAPI{Store: deps.Observe.Store, SessionEnd: deps.Observe.SessionEnd, InjectContext: cfg.AgentMemoryInjectContext}.Register(r)
-			MemoryAPI{Store: deps.Observe.Store}.Register(r)
+			MemoryAPI{Store: deps.Observe.Store, PythonBaseURL: deps.PythonBaseURL, Indexer: deps.IndexBus}.Register(r)
 			ObservationsAPI{Store: deps.Observe.Store}.Register(r)
 			InternalAPI{Store: deps.Observe.Store, IndexBus: deps.IndexBus}.RegisterPublic(r)
 			OrchestrationAPI{Store: deps.Observe.Store}.Register(r)
@@ -79,6 +79,10 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 		if deps.Search.Hybrid != nil {
 			r.Post("/smart-search", SmartSearchHandler(deps.Search))
 			r.Post("/search", SmartSearchHandler(deps.Search))
+			r.Post("/recall-summary", RecallSummaryHandler(RecallSummaryDeps{
+				Search:    deps.Search,
+				PythonURL: deps.PythonBaseURL,
+			}))
 		}
 		if deps.MCP != nil {
 			// Streamable HTTP MCP — accepts GET (SSE), POST (requests), DELETE (session close).

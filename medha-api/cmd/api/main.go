@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -91,12 +92,11 @@ func main() {
 		}
 	}()
 
-	// Search engines: BM25 + vector + graph. The vector index talks to the
-	// Python /embed endpoint; if Python is down, vector mode degrades to no-op
-	// (the hybrid orchestrator silently skips empty results).
-	bm25, err := search.NewBM25(rootCtx, store)
+	// Search engines: PgFTS (tsquery+GIN) + vector + graph. The vector index
+	// talks to Python /embed; if Python is down, vector mode degrades to no-op.
+	fts, err := search.NewPgFTS(rootCtx, store)
 	if err != nil {
-		logger.Error("search.bm25", "err", err)
+		logger.Error("search.pgfts", "err", err)
 		os.Exit(1)
 	}
 	vec, err := search.NewVectorIndex(rootCtx, store, &search.PythonEmbedder{BaseURL: cfg.PythonServiceURL})
@@ -105,10 +105,32 @@ func main() {
 		os.Exit(1)
 	}
 	graphIdx := search.NewGraphIndex(store)
+
+	// TSQuery expansion: LLM agent compiles natural-language to structured ts_query.
+	var queryExpander search.TSQueryExpander
+	if cfg.TSQueryExpandEnabled {
+		queryExpander = &search.PythonTSQueryExpander{BaseURL: cfg.PythonServiceURL}
+		logger.Info("search.tsquery_expander.enabled")
+	}
+
+	// Cross-encoder reranker via Python /rerank → Bifrost → Cohere rerank-4-fast.
+	var reranker search.Reranker
+	if cfg.RerankEnabled {
+		reranker = &search.PythonReranker{
+			BaseURL: cfg.PythonServiceURL,
+			TopK:    cfg.RerankTopK,
+			Model:   "cohere/rerank-4-fast",
+		}
+		logger.Info("search.reranker.enabled", "pool_size", cfg.RerankPoolSize, "top_k", cfg.RerankTopK)
+	}
+
 	hybrid := &search.Hybrid{
-		BM25: bm25, Vector: vec, Graph: graphIdx,
-		K:           60,
-		PerGroupCap: 3,
+		FTS: fts, Vector: vec, Graph: graphIdx,
+		QueryExpander:  queryExpander,
+		Reranker:       reranker,
+		RerankPoolSize: cfg.RerankPoolSize,
+		K:              60,
+		PerGroupCap:    3,
 		LookupGroup: func(ctx context.Context, id string) string {
 			row, err := store.GetObservation(ctx, id)
 			if err != nil || row == nil {
@@ -155,19 +177,9 @@ func main() {
 	}
 
 	// IndexBus glue: when Python posts back a compression, fan the
-	// re-indexing out to BM25 + vector + graph. Keeping this in main.go avoids
+	// re-indexing out to PgFTS + vector + graph. Keeping this in main.go avoids
 	// circular imports between api and search.
-	indexBus := indexBusFunc(func(ctx context.Context, observationID, project, text string) error {
-		var firstErr error
-		if err := bm25.Index(ctx, observationID, project, text); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if err := vec.Index(ctx, observationID, project, text); err != nil && firstErr == nil {
-			logger.Warn("index.vector_failed", "obs", observationID, "err", err)
-			// vector index is best-effort (Python may be down); do not fail
-		}
-		return firstErr
-	})
+	indexBus := &indexBusImpl{fts: fts, vec: vec, logger: logger}
 
 	// Wire the same index bus into the consolidation pipeline so that
 	// memories created during session-end are searchable via smart-search.
@@ -364,13 +376,29 @@ func (a storeStats) Events(ctx context.Context, sessionID string, limit int) ([]
 	return out, nil
 }
 
-// indexBusFunc adapts a plain function to api.IndexBus. Keeps the wiring
-// in main.go tight and avoids exporting a struct type for one method.
-type indexBusFunc func(ctx context.Context, observationID, project, text string) error
+// indexBusImpl fans out indexing to FTS + vector. Satisfies both api.IndexBus
+// and consolidation.MemoryIndexer so it can be wired to both without an import cycle.
+type indexBusImpl struct {
+	fts    *search.PgFTS
+	vec    *search.VectorIndex
+	logger *slog.Logger
+}
 
-// IndexObservation forwards to the wrapped function.
-func (f indexBusFunc) IndexObservation(ctx context.Context, observationID, project, text string) error {
-	return f(ctx, observationID, project, text)
+// IndexObservation indexes a compressed observation with provenance="episodic".
+func (b *indexBusImpl) IndexObservation(ctx context.Context, observationID, project, text string) error {
+	return b.IndexMemory(ctx, observationID, project, text, "episodic")
+}
+
+// IndexMemory indexes a document with an explicit provenance label for priority boosting.
+func (b *indexBusImpl) IndexMemory(ctx context.Context, id, project, text, provenance string) error {
+	var firstErr error
+	if err := b.fts.IndexWithProvenance(ctx, id, project, text, provenance); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := b.vec.Index(ctx, id, project, text); err != nil {
+		b.logger.Warn("index.vector_failed", "id", id, "err", err)
+	}
+	return firstErr
 }
 
 // runHealthcheck performs a localhost probe of /health and returns a UNIX

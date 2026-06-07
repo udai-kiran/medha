@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # Embedding model — if set, Bifrost is used; if unset, local hashing fallback
     embedding_model: str = Field(default="", alias="EMBEDDING_MODEL")
 
+    # Reranking — cross-encoder via Bifrost (e.g. cohere/rerank-4-fast)
+    rerank_model: str = Field(default="cohere/rerank-4-fast", alias="RERANK_MODEL")
+
     # Feature flags
     auto_compress: bool = Field(default=False, alias="AGENTMEMORY_AUTO_COMPRESS")
 

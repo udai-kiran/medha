@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,17 +53,17 @@ func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 func TestSessionAPI_StartGetList(t *testing.T) {
 	h, _ := newFullRouter(t)
 
-	w := post(t, h, "/agentmemory/session/start", map[string]any{
+	w := post(t, h, "/v1/agentmemory/session/start", map[string]any{
 		"sessionId": "sess-1", "project": "p", "cwd": "/tmp",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("start = %d, body=%s", w.Code, w.Body.String())
 	}
-	w = get(t, h, "/agentmemory/session/sess-1")
+	w = get(t, h, "/v1/agentmemory/session/sess-1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("get = %d", w.Code)
 	}
-	w = get(t, h, "/agentmemory/sessions?project=p")
+	w = get(t, h, "/v1/agentmemory/sessions?project=p")
 	if w.Code != http.StatusOK {
 		t.Fatalf("list = %d", w.Code)
 	}
@@ -77,7 +78,7 @@ func TestSessionAPI_StartGetList(t *testing.T) {
 
 func TestSessionAPI_GetNotFound(t *testing.T) {
 	h, _ := newFullRouter(t)
-	w := get(t, h, "/agentmemory/session/sess-missing")
+	w := get(t, h, "/v1/agentmemory/session/sess-missing")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)
 	}
@@ -85,10 +86,11 @@ func TestSessionAPI_GetNotFound(t *testing.T) {
 
 func TestMemoryAPI_RememberGetListForget(t *testing.T) {
 	h, _ := newFullRouter(t)
+	proj := fmt.Sprintf("mem-test-%d", time.Now().UnixNano())
 
-	w := post(t, h, "/agentmemory/remember", map[string]any{
-		"project": "p", "type": "architecture", "title": "Use jose",
-		"content": "Use jose for JWT.", "concepts": []string{"auth", "jwt"},
+	w := post(t, h, "/v1/agentmemory/remember", map[string]any{
+		"project": proj, "type": "architecture",
+		"content": "Use jose for JWT token validation.", "concepts": []string{"auth", "jwt"},
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("remember = %d, body=%s", w.Code, w.Body.String())
@@ -101,12 +103,12 @@ func TestMemoryAPI_RememberGetListForget(t *testing.T) {
 		t.Fatal("missing memoryId")
 	}
 
-	w = get(t, h, "/agentmemory/memory/"+rememberResp.MemoryID)
+	w = get(t, h, "/v1/agentmemory/memory/"+rememberResp.MemoryID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("get = %d", w.Code)
 	}
 
-	w = get(t, h, "/agentmemory/memories?project=p")
+	w = get(t, h, "/v1/agentmemory/memories?project="+proj)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list = %d", w.Code)
 	}
@@ -119,7 +121,7 @@ func TestMemoryAPI_RememberGetListForget(t *testing.T) {
 	}
 
 	// Forget.
-	w = post(t, h, "/agentmemory/forget", map[string]any{
+	w = post(t, h, "/v1/agentmemory/forget", map[string]any{
 		"memoryId": rememberResp.MemoryID, "actor": "test", "reason": "duplicate",
 	})
 	if w.Code != http.StatusNoContent {
@@ -127,7 +129,7 @@ func TestMemoryAPI_RememberGetListForget(t *testing.T) {
 	}
 
 	// Confirm gone.
-	w = get(t, h, "/agentmemory/memory/"+rememberResp.MemoryID)
+	w = get(t, h, "/v1/agentmemory/memory/"+rememberResp.MemoryID)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("after forget = %d, want 404", w.Code)
 	}
@@ -135,7 +137,7 @@ func TestMemoryAPI_RememberGetListForget(t *testing.T) {
 
 func TestMemoryAPI_RememberValidation(t *testing.T) {
 	h, _ := newFullRouter(t)
-	w := post(t, h, "/agentmemory/remember", map[string]any{"project": "p"})
+	w := post(t, h, "/v1/agentmemory/remember", map[string]any{"project": "p", "content": ""})
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("missing type/title status = %d", w.Code)
 	}
@@ -153,12 +155,12 @@ func TestObservationsAPI_GetAndList(t *testing.T) {
 		})
 	}
 
-	w := get(t, h, "/agentmemory/observation/obs-1")
+	w := get(t, h, "/v1/agentmemory/observation/obs-1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("get observation = %d", w.Code)
 	}
 
-	w = get(t, h, "/agentmemory/observations?session=sess-1")
+	w = get(t, h, "/v1/agentmemory/observations?session=sess-1")
 	if w.Code != http.StatusOK {
 		t.Fatalf("list = %d", w.Code)
 	}
@@ -223,4 +225,8 @@ type indexBusFn func(ctx context.Context, observationID, project, text string) e
 
 func (f indexBusFn) IndexObservation(ctx context.Context, id, project, text string) error {
 	return f(ctx, id, project, text)
+}
+
+func (f indexBusFn) IndexMemory(ctx context.Context, id, project, text, provenance string) error {
+	return nil
 }

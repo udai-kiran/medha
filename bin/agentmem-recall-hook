@@ -52,8 +52,8 @@ fi
 
 BODY=$(jq -cn --arg q "$QUERY" --arg p "$PROJECT" '{"query": $q, "project": $p, "limit": 5}')
 
-CURL_ARGS=(-s --max-time 3
-  -X POST "$AGENTMEMORY_URL/agentmemory/smart-search"
+CURL_ARGS=(-s --max-time 8
+  -X POST "$AGENTMEMORY_URL/v1/agentmemory/recall-summary"
   -H "Content-Type: application/json")
 [ -n "${AGENTMEMORY_SECRET:-}" ] && CURL_ARGS+=(-H "Authorization: Bearer $AGENTMEMORY_SECRET")
 CURL_ARGS+=(-d "$BODY")
@@ -64,16 +64,9 @@ RESPONSE=$(curl "${CURL_ARGS[@]}" 2>/dev/null) || exit 0
 RESULT_COUNT=$(printf '%s' "$RESPONSE" | jq -r '.results | length' 2>/dev/null)
 [ -z "$RESULT_COUNT" ] || [ "$RESULT_COUNT" -eq 0 ] && exit 0
 
-# Format memories as a brief context block.
-# Relevance is Reciprocal Rank Fusion score — skip anything below 0.05 (noise).
-MEMORIES=$(printf '%s' "$RESPONSE" | jq -r '
-  .results[] |
-  select(.title != null and .title != "" and (.relevance // 0) >= 0.05) |
-  "• " + .title + (if .snippet != null and .snippet != "" then ": " + .snippet else "" end)
-' 2>/dev/null)
+SUMMARY=$(printf '%s' "$RESPONSE" | jq -r '.summary // empty' 2>/dev/null)
+[ -z "$SUMMARY" ] && exit 0
 
-[ -z "$MEMORIES" ] && exit 0
-
-printf '[recall-memories] OUTPUT:\n%s\n' "$MEMORIES" >&2
-printf '[agent-mem] Relevant memories for this project:\n%s\n' "$MEMORIES"
+printf '[recall-memories] OUTPUT:\n%s\n' "$SUMMARY" >&2
+printf '[agent-mem] Relevant context from memory:\n%s\n' "$SUMMARY"
 exit 0

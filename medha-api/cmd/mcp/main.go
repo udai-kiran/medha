@@ -52,9 +52,9 @@ func main() {
 	}
 	defer func() { _ = store.Close() }()
 
-	bm25, err := search.NewBM25(rootCtx, store)
+	fts, err := search.NewPgFTS(rootCtx, store)
 	if err != nil {
-		logger.Error("search.bm25", "err", err)
+		logger.Error("search.pgfts", "err", err)
 		os.Exit(1)
 	}
 	vec, err := search.NewVectorIndex(rootCtx, store, &search.PythonEmbedder{
@@ -65,7 +65,7 @@ func main() {
 		os.Exit(1)
 	}
 	graph := search.NewGraphIndex(store)
-	hybrid := &search.Hybrid{BM25: bm25, Vector: vec, Graph: graph, K: 60}
+	hybrid := &search.Hybrid{FTS: fts, Vector: vec, Graph: graph, K: 60}
 
 	srv := mcp.NewMemoryServer("agent_mem", "0.1.0", mcp.MemoryToolsDeps{
 		Store:         store,

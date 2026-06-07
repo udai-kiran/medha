@@ -10,12 +10,15 @@ import (
 	"github.com/udai-kiran/medha/internal/state"
 )
 
-// IndexBus is the minimal contract the search engines satisfy for the
-// internal compression callback — when Python writes back a compressed
-// observation, we re-index it across BM25 / vector / graph. The actual
-// search.Hybrid struct holds the engines; we expose only the side-effect.
+// IndexBus is the minimal contract the search engines satisfy for indexing
+// both observations (from compression callbacks) and memories (from /remember
+// and the consolidation pipeline).
 type IndexBus interface {
+	// IndexObservation indexes a compressed observation (provenance=episodic).
 	IndexObservation(ctx context.Context, observationID, project, text string) error
+	// IndexMemory indexes a memory with an explicit provenance label so the
+	// hybrid search can apply priority boosts (user > extracted > episodic).
+	IndexMemory(ctx context.Context, id, project, text, provenance string) error
 }
 
 // NoOpIndexBus is the zero-value placeholder. The real implementation lives
@@ -24,6 +27,11 @@ type NoOpIndexBus struct{}
 
 // IndexObservation does nothing.
 func (NoOpIndexBus) IndexObservation(ctx context.Context, observationID, project, text string) error {
+	return nil
+}
+
+// IndexMemory does nothing.
+func (NoOpIndexBus) IndexMemory(ctx context.Context, id, project, text, provenance string) error {
 	return nil
 }
 

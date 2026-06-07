@@ -31,9 +31,12 @@ import (
 // without aborting the others. Python unreachable → fall back to a synthetic
 // session summary built in Go from the raw observation rows.
 // MemoryIndexer is the minimal interface for indexing memory content into
-// BM25 + vector search after the consolidation pipeline persists a memory row.
+// FTS + vector search after the consolidation pipeline persists a memory row.
 type MemoryIndexer interface {
 	IndexObservation(ctx context.Context, id, project, text string) error
+	// IndexMemory indexes a memory with an explicit provenance label so the
+	// hybrid search can apply priority boosts after RRF fusion.
+	IndexMemory(ctx context.Context, id, project, text, provenance string) error
 }
 
 type Pipeline struct {
@@ -121,7 +124,11 @@ func (p *Pipeline) Run(ctx context.Context, sessionID string) (memCount int, err
 		memCount++
 		if p.Indexer != nil {
 			text := m.Title + " " + m.Content
-			if err := p.Indexer.IndexObservation(ctx, m.ID, m.Project, text); err != nil {
+			prov := m.Provenance
+			if prov == "" {
+				prov = state.ProvenanceExtracted
+			}
+			if err := p.Indexer.IndexMemory(ctx, m.ID, m.Project, text, prov); err != nil {
 				log.Warn("consolidation.index_memory.failed", "memory_id", m.ID, "err", err)
 			} else {
 				log.Info("consolidation.index_memory.ok", "memory_id", m.ID)
@@ -526,6 +533,7 @@ type memoryRow struct {
 	Project              string
 	Type                 string
 	Tier                 string
+	Provenance           string // state.ProvenanceExtracted for pipeline-derived memories
 	Title                string
 	Content              string
 	Concepts             []string
@@ -562,6 +570,7 @@ func distilMemories(obs []*state.ObservationRow, summary *sessionSummary) []memo
 		Project:              project,
 		Type:                 "workflow",
 		Tier:                 "semantic",
+		Provenance:           state.ProvenanceExtracted,
 		Title:                summary.Title,
 		Content:              summary.Narrative,
 		Concepts:             concepts,
@@ -572,11 +581,15 @@ func distilMemories(obs []*state.ObservationRow, summary *sessionSummary) []memo
 
 	// Plus a Memory per key decision so they're individually recallable.
 	for _, d := range summary.KeyDecisions {
+		if isJunkDecision(d) {
+			continue
+		}
 		out = append(out, memoryRow{
 			ID:                   newMemoryID(),
 			Project:              project,
 			Type:                 "architecture",
 			Tier:                 "semantic",
+			Provenance:           state.ProvenanceExtracted,
 			Title:                truncate(d, 120),
 			Content:              d,
 			Concepts:             concepts,
@@ -603,6 +616,22 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
+// isJunkDecision returns true for placeholder or too-short decisions that
+// produce useless architecture memories (e.g. "No decisions made", "use time").
+func isJunkDecision(d string) bool {
+	if len(strings.TrimSpace(d)) < 20 {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(d))
+	junkPrefixes := []string{"no decision", "none", "n/a", "not applicable"}
+	for _, p := range junkPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // persistMemory writes a memory row.
 func (p *Pipeline) persistMemory(ctx context.Context, m memoryRow) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -611,13 +640,18 @@ func (p *Pipeline) persistMemory(ctx context.Context, m memoryRow) error {
 	sessions, _ := json.Marshal(m.SessionIDs)
 	sources, _ := json.Marshal(m.SourceObservationIDs)
 
+	provenance := m.Provenance
+	if provenance == "" {
+		provenance = state.ProvenanceExtracted
+	}
+
 	_, err := p.Store.DB.ExecContext(ctx, `
         INSERT INTO memories (
-            id, project, type, tier, title, content,
+            id, project, type, tier, provenance, title, content,
             concepts_json, files_json, session_ids_json, source_observation_ids,
             strength, is_latest, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1.0, 1, $11, $12)
-    `, m.ID, m.Project, m.Type, m.Tier, m.Title, m.Content,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1.0, 1, $12, $13)
+    `, m.ID, m.Project, m.Type, m.Tier, provenance, m.Title, m.Content,
 		string(concepts), string(files), string(sessions), string(sources),
 		now, now)
 	return err

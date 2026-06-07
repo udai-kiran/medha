@@ -77,6 +77,7 @@ CREATE TABLE memories (
     project                  TEXT NOT NULL DEFAULT '',
     type                     TEXT NOT NULL,       -- pattern|preference|architecture|bug|workflow|fact
     tier                     TEXT NOT NULL DEFAULT 'semantic', -- working|episodic|semantic|procedural
+    provenance               TEXT NOT NULL DEFAULT 'extracted', -- user|extracted|episodic|system
     title                    TEXT NOT NULL,
     content                  TEXT NOT NULL,
     concepts_json            TEXT NOT NULL DEFAULT '[]',
@@ -89,11 +90,12 @@ CREATE TABLE memories (
     updated_at               TEXT NOT NULL,
     last_retrieved_at        TEXT
 );
-CREATE INDEX idx_memories_project   ON memories(project);
-CREATE INDEX idx_memories_type      ON memories(type);
-CREATE INDEX idx_memories_tier      ON memories(tier);
-CREATE INDEX idx_memories_strength  ON memories(strength);
-CREATE INDEX idx_memories_is_latest ON memories(is_latest);
+CREATE INDEX idx_memories_project    ON memories(project);
+CREATE INDEX idx_memories_type       ON memories(type);
+CREATE INDEX idx_memories_tier       ON memories(tier);
+CREATE INDEX idx_memories_provenance ON memories(provenance);
+CREATE INDEX idx_memories_strength   ON memories(strength);
+CREATE INDEX idx_memories_is_latest  ON memories(is_latest);
 
 -- Session summaries: one row per consolidated session.
 CREATE TABLE sessions_summary (
@@ -534,6 +536,17 @@ CREATE TABLE IF NOT EXISTS skills (
     UNIQUE (project, skill_name)
 );
 CREATE INDEX IF NOT EXISTS idx_skills_project ON skills(project);
+`,
+	},
+	{
+		version: 11,
+		name:    "memory_provenance",
+		sql: `
+-- Provenance: how a memory was created (user | extracted | episodic | system).
+-- Existing rows default to 'extracted' (pipeline-derived). Fresh DBs get this
+-- column from the CREATE TABLE in migration 1; this ALTER handles existing DBs.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS provenance TEXT NOT NULL DEFAULT 'extracted';
+CREATE INDEX IF NOT EXISTS idx_memories_provenance ON memories(provenance);
 `,
 	},
 }

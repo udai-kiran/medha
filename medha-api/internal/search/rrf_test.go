@@ -62,11 +62,11 @@ func TestDiversityBoost_CapsPerGroup(t *testing.T) {
 }
 
 func TestHybrid_FallbackOnSingleEngine(t *testing.T) {
-	// With only BM25 wired, mode=hybrid should still produce results.
+	// With only FTS wired, mode=hybrid should still produce results.
 	store := openStore(t)
-	b, _ := NewBM25(context.Background(), store)
-	_ = b.Index(context.Background(), "obs-1", "p", "JWT authentication")
-	h := &Hybrid{BM25: b, K: 60}
+	fts, _ := NewPgFTS(context.Background(), store)
+	_ = fts.Index(context.Background(), "obs-1", "p", "JWT authentication")
+	h := &Hybrid{FTS: fts, K: 60}
 	hits, err := h.Search(context.Background(), "p", "JWT", "hybrid", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -78,11 +78,11 @@ func TestHybrid_FallbackOnSingleEngine(t *testing.T) {
 
 func TestHybrid_SingleModePassthrough(t *testing.T) {
 	store := openStore(t)
-	b, _ := NewBM25(context.Background(), store)
-	_ = b.Index(context.Background(), "obs-1", "p", "JWT")
-	h := &Hybrid{BM25: b}
+	fts, _ := NewPgFTS(context.Background(), store)
+	_ = fts.Index(context.Background(), "obs-1", "p", "JWT")
+	h := &Hybrid{FTS: fts}
 	hits, _ := h.Search(context.Background(), "p", "JWT", ModeBM25, 10)
 	if len(hits) != 1 || hits[0].ID != "obs-1" {
-		t.Errorf("bm25 passthrough = %+v", hits)
+		t.Errorf("fts passthrough via bm25 mode = %+v", hits)
 	}
 }

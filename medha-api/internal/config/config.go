@@ -55,6 +55,14 @@ type Config struct {
 	DecayReviewLow          float64
 	DecayReviewHigh         float64
 
+	// TSQuery expansion — LLM compiles natural-language to structured ts_query
+	TSQueryExpandEnabled bool
+
+	// Reranking (cross-encoder via Python /rerank → Bifrost → Cohere)
+	RerankEnabled  bool
+	RerankPoolSize int // candidates fed to the reranker; 0 → 30 default
+	RerankTopK     int // reranker output size; 0 → use request limit
+
 	// Security
 	AgentMemorySecret string
 
@@ -97,6 +105,10 @@ func FromEnv() *Config {
 		DecayEvictionThreshold:  getFloat("DECAY_EVICTION_THRESHOLD", 0.10),
 		DecayReviewLow:          getFloat("DECAY_REVIEW_LOW", 0.10),
 		DecayReviewHigh:         getFloat("DECAY_REVIEW_HIGH", 0.30),
+		TSQueryExpandEnabled:    getBool("TSQUERY_EXPAND_ENABLED", false),
+		RerankEnabled:           getBool("RERANK_ENABLED", false),
+		RerankPoolSize:          getInt("RERANK_POOL_SIZE", 30),
+		RerankTopK:              getInt("RERANK_TOP_K", 0),
 		AgentMemorySecret:       getString("AGENTMEMORY_SECRET", ""),
 		OTELExporterEndpoint:    getString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTELServiceName:         getString("OTEL_SERVICE_NAME", "agent-mem-go"),

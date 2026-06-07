@@ -100,7 +100,7 @@ def synthetic_session_summary(
     # Decisions: scan facts + narratives for "decided to ...", "use ..." etc.
     key_decisions: list[str] = []
     decision_re = re.compile(
-        r"\b(?:decide[ds]?\s+to|use|chose|chosen|adopt(?:ed)?|prefer)\b[^.!?\n]{4,160}",
+        r"\b(?:decide[ds]?\s+to|use|chose|chosen|adopt(?:ed)?|prefer)\b[^.!?\n]{15,160}",
         re.IGNORECASE,
     )
     seen_decisions: set[str] = set()
@@ -135,6 +135,8 @@ def synthetic_session_summary(
 _SYSTEM_PROMPT = (
     "You summarise an agent coding session into structured XML for long-term memory.\n"
     "Highlight the goal, the key decisions made, and the files modified.\n"
+    "Only include substantive decisions — choices about tools, libraries, approaches, or architecture.\n"
+    "If no decisions were made, leave <decisions/> empty. Never write placeholder text like 'No decisions made'.\n"
     "Respond ONLY with the XML envelope."
 )
 

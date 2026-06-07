@@ -51,21 +51,30 @@ func DiversityBoost(hits []Hit, perGroup int, group func(id string) string) []Hi
 
 // Mode names accepted by the orchestrator.
 const (
-	ModeBM25   = "bm25"
+	ModeBM25   = "bm25"   // kept for API compat — routes to the PgFTS engine
 	ModeVector = "vector"
 	ModeGraph  = "graph"
 	ModeHybrid = "hybrid"
 )
 
-// Hybrid orchestrates the three engines and fuses results via RRF. Each
-// engine is independent; missing engines (e.g. graph in lightweight mode)
-// are silently skipped.
+// Hybrid orchestrates the three engines and fuses results via RRF, then
+// optionally reranks the fused pool with a cross-encoder.
 type Hybrid struct {
-	BM25   *BM25
+	// FTS is the PostgreSQL full-text search engine (replaces hand-rolled BM25).
+	FTS    *PgFTS
 	Vector *VectorIndex
 	Graph  *GraphIndex
-	// PerGroupCap limits the number of results sharing the same diversity
-	// group (typically sessionId). 0 disables.
+	// QueryExpander converts the natural-language query to structured ts_query
+	// strings before the FTS leg of hybrid search. nil falls back to
+	// websearch_to_tsquery. Failures are silently ignored.
+	QueryExpander TSQueryExpander
+	// Reranker reorders the RRF-fused pool using a cross-encoder. nil disables.
+	Reranker Reranker
+	// RerankPoolSize is the number of RRF hits fed to the reranker. 0 uses the
+	// stage constant (30). Has no effect when Reranker is nil.
+	RerankPoolSize int
+	// PerGroupCap limits the number of results per diversity group (sessionId).
+	// Applied after reranking. 0 disables.
 	PerGroupCap int
 	// K is the RRF k constant.
 	K int
@@ -73,18 +82,18 @@ type Hybrid struct {
 	LookupGroup func(ctx context.Context, id string) string
 }
 
-// Search routes by mode. "hybrid" runs all engines and fuses; the other modes
-// call exactly one engine and return its native ranking.
+// Search routes by mode. "hybrid" (and "bm25" for backward compat) run the full
+// pipeline; the other modes call exactly one engine.
 func (h *Hybrid) Search(ctx context.Context, project, query, mode string, limit int) ([]Hit, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 	switch mode {
-	case ModeBM25:
-		if h.BM25 == nil {
+	case ModeBM25: // "bm25" now routes to the PgFTS engine
+		if h.FTS == nil {
 			return nil, nil
 		}
-		return h.BM25.Search(ctx, project, query, limit)
+		return h.FTS.Search(ctx, project, query, limit)
 	case ModeVector:
 		if h.Vector == nil {
 			return nil, nil
@@ -100,26 +109,58 @@ func (h *Hybrid) Search(ctx context.Context, project, query, mode string, limit 
 	}
 }
 
+// provenanceBoost returns the score multiplier for a memory provenance label.
+// Applied after RRF fusion so user-authored memories surface above pipeline
+// extractions, which surface above raw episodic observations.
+func provenanceBoost(p string) float64 {
+	switch p {
+	case "user":
+		return 2.0
+	case "extracted":
+		return 1.0
+	case "episodic":
+		return 0.7
+	default:
+		return 1.0
+	}
+}
+
 func (h *Hybrid) hybridSearch(ctx context.Context, project, query string, limit int) ([]Hit, error) {
-	// Each engine returns up to 30 (per agent_mem.md "Phase 2") so the fusion
-	// has enough room to re-rank.
+	// Each engine returns up to stage hits so the RRF pool has room to rerank.
 	const stage = 30
 	var lists [][]Hit
-	if h.BM25 != nil {
-		hs, err := h.BM25.Search(ctx, project, query, stage)
-		if err == nil && hs != nil {
-			lists = append(lists, hs)
+
+	// Track provenance from FTS hits so we can boost after RRF (rank-based fusion
+	// doesn't carry scores forward, so we apply the boost on the fused scores).
+	provenanceByID := make(map[string]string)
+
+	if h.FTS != nil {
+		var ftsHits []Hit
+		// Try LLM-expanded ts_query strings first; degrade to websearch_to_tsquery.
+		if h.QueryExpander != nil {
+			if tsqs, err := h.QueryExpander.Expand(ctx, query); err == nil && len(tsqs) > 0 {
+				ftsHits, _ = h.FTS.SearchWithTSQuery(ctx, project, tsqs, stage)
+			}
+		}
+		if len(ftsHits) == 0 {
+			ftsHits, _ = h.FTS.Search(ctx, project, query, stage)
+		}
+		for _, fh := range ftsHits {
+			if fh.Provenance != "" {
+				provenanceByID[fh.ID] = fh.Provenance
+			}
+		}
+		if len(ftsHits) > 0 {
+			lists = append(lists, ftsHits)
 		}
 	}
 	if h.Vector != nil {
-		hs, err := h.Vector.Search(ctx, project, query, stage)
-		if err == nil && hs != nil {
+		if hs, err := h.Vector.Search(ctx, project, query, stage); err == nil && hs != nil {
 			lists = append(lists, hs)
 		}
 	}
 	if h.Graph != nil {
-		hs, err := h.Graph.Search(ctx, project, query, stage)
-		if err == nil && hs != nil {
+		if hs, err := h.Graph.Search(ctx, project, query, stage); err == nil && hs != nil {
 			lists = append(lists, hs)
 		}
 	}
@@ -127,6 +168,43 @@ func (h *Hybrid) hybridSearch(ctx context.Context, project, query string, limit 
 		return nil, nil
 	}
 	fused := RRFFuse(h.K, lists...)
+
+	// Apply provenance boost: user memories rise above pipeline extractions which
+	// rise above episodic observations. Re-sort after applying multipliers so the
+	// reranker (if any) starts from a priority-aware order.
+	if len(provenanceByID) > 0 {
+		for i := range fused {
+			if p, ok := provenanceByID[fused[i].ID]; ok {
+				fused[i].Score *= provenanceBoost(p)
+			}
+		}
+		sort.SliceStable(fused, func(i, j int) bool { return fused[i].Score > fused[j].Score })
+	}
+
+	// Cross-encoder reranking. Best-effort: any failure falls back to RRF order.
+	if h.Reranker != nil && h.FTS != nil && len(fused) > 0 {
+		pool := fused
+		poolSize := h.RerankPoolSize
+		if poolSize <= 0 {
+			poolSize = stage
+		}
+		if len(pool) > poolSize {
+			pool = pool[:poolSize]
+		}
+		ids := make([]string, len(pool))
+		for i, hit := range pool {
+			ids[i] = hit.ID
+		}
+		if texts, err := h.FTS.GetDocumentTexts(ctx, ids); err == nil {
+			candidates := make([]RerankCandidate, len(pool))
+			for i, hit := range pool {
+				candidates[i] = RerankCandidate{ID: hit.ID, Text: texts[hit.ID]}
+			}
+			if reranked, err := h.Reranker.Rerank(ctx, query, candidates); err == nil && len(reranked) > 0 {
+				fused = reranked
+			}
+		}
+	}
 
 	if h.PerGroupCap > 0 && h.LookupGroup != nil {
 		fused = DiversityBoost(fused, h.PerGroupCap, func(id string) string {

@@ -29,7 +29,7 @@ type DiagnosticStats struct {
 	CompressedObs    int `json:"compressedObservations"`
 	UncompressedObs  int `json:"uncompressedObservations"`
 	Memories         int `json:"memories"`
-	BM25Docs         int `json:"bm25Docs"`
+	FTSDocs          int `json:"ftsDocs"`
 	VectorDocs       int `json:"vectorDocs"`
 	StuckSessions    int `json:"stuckSessions"`
 }
@@ -57,15 +57,15 @@ func (s *Store) Diagnose(ctx context.Context) (*DiagnosticReport, error) {
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM observations WHERE compressed = 1`).Scan(&r.Stats.CompressedObs)
 	r.Stats.UncompressedObs = r.Stats.Observations - r.Stats.CompressedObs
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories`).Scan(&r.Stats.Memories)
-	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM bm25_docs`).Scan(&r.Stats.BM25Docs)
+	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pgfts_docs`).Scan(&r.Stats.FTSDocs)
 	_ = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM vector_docs`).Scan(&r.Stats.VectorDocs)
 
-	// Index consistency: BM25 doc count should roughly match compressed observations.
-	if r.Stats.CompressedObs > 0 && r.Stats.BM25Docs == 0 {
+	// Index consistency: FTS doc count should roughly match compressed observations.
+	if r.Stats.CompressedObs > 0 && r.Stats.FTSDocs == 0 {
 		r.Healthy = false
 		r.Issues = append(r.Issues, DiagnosticIssue{
-			Component: "bm25_index", Severity: "warning",
-			Message: fmt.Sprintf("%d compressed observations but 0 BM25 docs — index may need rebuild", r.Stats.CompressedObs),
+			Component: "fts_index", Severity: "warning",
+			Message: fmt.Sprintf("%d compressed observations but 0 FTS docs — index may need rebuild", r.Stats.CompressedObs),
 			Fixable: true,
 		})
 	}
