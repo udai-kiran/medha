@@ -99,7 +99,7 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 - **`consolidation/`** — `Pipeline` runs the SessionEnd DAG: fetch observations → POST `/summarize` to Python → POST `/extract` to Python → distil memories → persist. Best-effort: individual steps fail without aborting the rest. `DecayEngine` applies Ebbinghaus decay (`strength *= rate^daysOld`; hard-evict below threshold) on a nightly scheduler.
 - **`dedup/`** — SHA-256 rolling 5-minute window per session to drop duplicate observations.
 - **`privacy/`** — Fail-closed filter applied before any persistence. Strips `<private>…</private>` blocks, redacts API keys/JWTs/key=value secrets, and removes ANSI codes. Sets `HasSecrets` flag on the observation so downstream enrichment is skipped (FR-9).
-- **`mcp/`** — MCP server using `modelcontextprotocol/go-sdk`. `tools.go` registers the core tool surface; `tools_extended.go` adds 27+ tools covering orchestration, team/governance, slots/working, advanced retrieval, entity intelligence, and vision platform. Streamable HTTP transport (spec 2025-06-18). Mounted at `/agentmemory/mcp` in the API and served standalone on port 3114 via `cmd/mcp`.
+- **`mcp/`** — MCP server using `modelcontextprotocol/go-sdk`. `tools.go` registers the core tool surface; `tools_extended.go` adds 27+ tools covering orchestration, team/governance, slots/working, advanced retrieval, entity intelligence, and vision platform. Streamable HTTP transport (spec 2025-06-18). Mounted at `/v1/agentmemory/mcp` in the API and served standalone on port 3114 via `cmd/mcp`.
 - **`graph/`** — Optional Neo4j Bolt driver. The service runs in degraded mode when `NEO4J_ENABLED=false` (ADR-0003).
 - **`telemetry/`** — Prometheus metrics (counters: observations, dedup hits, privacy redactions, consolidation runs, LLM/embed calls; histograms: search latency). Served at `/metrics`.
 - **`viewer/`** — WebSocket hub at :3113; broadcasts live observations to the dashboard. SSE stream also available at `GET :3113/events`.
@@ -126,7 +126,7 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 
 ### Data flow summary
 
-1. Agent fires `POST /agentmemory/observe` → privacy filter → dedup check → store `RawObservation` → enqueue compression job.
+1. Agent fires `POST /v1/agentmemory/observe` → privacy filter → dedup check → store `RawObservation` → enqueue compression job.
 2. Worker consumes → calls Python `/compress` → Python calls Go `POST /internal/observation/{id}/compressed` → BM25 + vector indexed.
 3. Agent fires `SessionEnd` hook → consolidation pipeline → `SessionSummary` + `Memory` rows created.
 4. Nightly decay job evicts memories whose strength drops below `DECAY_EVICTION_THRESHOLD`.
@@ -138,7 +138,7 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 | ADR-0001 | Queue backend: `memory` (dev default) or `rabbitmq` (prod), controlled by `QUEUE_BACKEND` |
 | ADR-0002 | Ebbinghaus decay constants are config-driven (`DECAY_RATE_PER_DAY`, `DECAY_EVICTION_THRESHOLD`) |
 | ADR-0003 | Neo4j is optional; service degrades gracefully when disabled |
-| ADR-0004 | All REST routes under `/agentmemory/` base path |
+| ADR-0004 | All REST routes under `/v1/agentmemory/` base path |
 | ADR-0005 | MCP tool surface: small, tested set delegating to REST logic |
 | ADR-0006 | Extraction defaults to heuristic (no heavy NLP dependency) |
 
@@ -189,7 +189,7 @@ docker run -d -p 3114:3114 --env-file .env.mcp ghcr.io/udai-kiran/agent-mem:late
 claude mcp add agent-mem --transport http http://localhost:3114/mcp
 ```
 
-The same MCP surface is also available at `GET|POST /agentmemory/mcp` on the main API (port 3111).
+The same MCP surface is also available at `GET|POST /v1/agentmemory/mcp` on the main API (port 3111).
 
 ## Privacy convention for agents
 

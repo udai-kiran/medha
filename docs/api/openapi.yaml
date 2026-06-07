@@ -1,35 +1,122 @@
 openapi: 3.1.0
 info:
   title: agent_mem REST API
-  version: 0.1.0
+  version: 1.0.0
   description: |
-    Public agent-facing surface of the agent_mem service. All routes live
-    under the `/agentmemory` base path (see ADR-0004) except for infrastructure
-    routes (`/health`, viewer) which sit at the root.
+    Long-term memory layer for AI coding agents — REST surface of the medha service.
 
-    This document is seeded in Task 2 with `/agentmemory/health` and grows as
-    later tasks (8, 18, 25, 26, 33) land routes. Task 35 finalises it.
+    **Base path:** All versioned routes live under `/v1/agentmemory`. Infrastructure
+    routes (`/health`, `/agentmemory/health`, `/metrics`) are unversioned.
+
+    **Stability tiers:**
+    - Routes without `x-stability` are **stable** — schema is fixed for the v1 lifetime.
+    - Routes tagged `x-stability: experimental` may change or be removed without notice.
+
+    **Auth:** A Bearer token (`AGENTMEMORY_SECRET`) is required on all `/v1/agentmemory/*`
+    routes when the secret is non-empty. Leave it empty in development to disable auth.
 
 servers:
   - url: http://localhost:3111
     description: Local development
 
+security:
+  - BearerAuth: []
+
+tags:
+  - name: infra
+    description: Health and metrics — no auth, no version prefix.
+  - name: capture
+    description: Ingestion of agent lifecycle observations.
+  - name: search
+    description: Hybrid memory search (BM25 + vector + graph, fused via RRF).
+  - name: memory
+    description: Explicit memory creation and retrieval.
+  - name: sessions
+    description: Session lifecycle — start, end, and summary retrieval.
+  - name: observations
+    description: Raw observation access and file-history queries.
+  - name: context
+    description: On-demand context assembly for injection into agent prompts.
+  - name: preferences
+    description: Agent-detected user preferences.
+  - name: facts
+    description: Subject–predicate–object fact triples.
+  - name: profile
+    description: Aggregated project profile (preferences + facts + memories).
+  - name: orchestration
+    description: "**Experimental.** Actions, leases, routines, signals, checkpoints, sentinels."
+  - name: team
+    description: "**Experimental.** Cross-agent memory sharing and audit."
+  - name: conversations
+    description: "**Experimental.** Short-term conversation message store."
+  - name: entities
+    description: "**Experimental.** Named-entity registry, enrichment, deduplication."
+  - name: slots
+    description: "**Experimental.** Named key-value slots and working-memory stack."
+  - name: traces
+    description: "**Experimental.** Multi-step agent execution traces."
+  - name: patterns
+    description: "**Experimental.** Recurring-pattern detection."
+  - name: timeline
+    description: "**Experimental.** Chronological activity feed."
+  - name: export
+    description: "**Experimental.** Backup/restore and snapshot management."
+  - name: advanced-retrieval
+    description: "**Experimental.** Facets, lessons, skills."
+  - name: platform
+    description: "**Experimental.** Vision embedding, mesh sync, maintenance."
+  - name: diagnose
+    description: "**Experimental.** Self-diagnostic and healing endpoints."
+  - name: governance
+    description: "**Experimental.** Privileged delete and full audit log."
+
 paths:
-  /agentmemory/observe:
-    post:
-      summary: Capture an agent observation
+  # ── Infra (unversioned) ────────────────────────────────────────────────────
+
+  /agentmemory/health:
+    get:
+      summary: Service health probe
       description: |
-        Ingest a single HookPayload from an agent lifecycle hook. The handler:
+        Returns overall and per-component status. Neo4j is optional (ADR-0003);
+        when disabled, its component reports `degraded` and the overall status is
+        `degraded` rather than `down`. Always returns HTTP 200 — the body carries
+        the degradation signal.
+      operationId: getHealth
+      tags: [infra]
+      security: []
+      responses:
+        "200":
+          description: Health snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: degraded
+                version: "1.0.0"
+                components:
+                  - name: api
+                    status: ok
+                  - name: postgres
+                    status: ok
+                  - name: neo4j
+                    status: degraded
+                    message: "disabled (NEO4J_ENABLED=false)"
 
-        1. Validates required fields and the `hookType` enum.
-        2. Applies the privacy filter (Task 10) BEFORE persistence — secrets
-           never reach storage or downstream LLM calls (NFR-10).
-        3. Deduplicates against a 5-minute rolling SHA-256 window per session.
-        4. Persists a `RawObservation`, enqueues async compression, and returns
-           in under 50 ms (NFR-2).
+  # ── Capture ────────────────────────────────────────────────────────────────
 
-        On `SessionEnd` the handler routes to the consolidation pipeline and
-        returns `202` without creating a new observation row.
+  /v1/agentmemory/observe:
+    post:
+      summary: Capture an agent lifecycle observation
+      description: |
+        Ingests a single hook payload from an agent lifecycle event. Processing order:
+
+        1. Privacy filter — strips `<private>…</private>` blocks and redacts secrets before any DB write.
+        2. Deduplication — 5-minute rolling SHA-256 window per session; duplicates return 202.
+        3. Persistence — stores a `RawObservation` and enqueues async compression.
+
+        When `hookType` is `session_end`, the handler routes to the consolidation
+        pipeline instead and returns 202 without creating an observation row.
       operationId: postObserve
       tags: [capture]
       requestBody:
@@ -38,19 +125,24 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/HookPayload"
+            example:
+              hookType: post_tool_use
+              sessionId: sess-abc123
+              project: my-project
+              timestamp: "2026-06-02T10:30:00Z"
+              data:
+                tool_name: read
+                tool_input: {file_path: src/auth.ts}
+                tool_output: "export function validateToken() {}"
       responses:
         "201":
-          description: Observation accepted; compression queued.
+          description: Observation accepted and compression queued.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ObserveResponse"
         "202":
-          description: |
-            Either a duplicate observation (within the dedup window) or a
-            `SessionEnd` hook that triggered consolidation. `deduplicated` is
-            true in the first case; both share the 202 status to signal
-            "accepted, no new row".
+          description: Duplicate observation (within dedup window) or `session_end` consolidation triggered.
           content:
             application/json:
               schema:
@@ -60,15 +152,16 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /agentmemory/smart-search:
+  # ── Search ─────────────────────────────────────────────────────────────────
+
+  /v1/agentmemory/smart-search:
     post:
-      summary: Hybrid search (BM25 + vector + graph fused via RRF)
+      summary: Hybrid memory search
       description: |
-        Run a hybrid search over compressed observations. The default mode
-        runs all three engines (BM25 keyword, vector cosine similarity, graph
-        BFS) and fuses the rankings via Reciprocal Rank Fusion (k=60), then
-        applies a per-session diversity cap. Single-mode is supported for
-        debugging and fallback.
+        Searches compressed observations using BM25 (keyword), vector (cosine
+        similarity), and optionally graph (entity BFS), then fuses rankings with
+        Reciprocal Rank Fusion (k=60). A per-session diversity cap of 3 is applied.
+        Use `mode` to restrict to a single engine for debugging.
       operationId: postSmartSearch
       tags: [search]
       requestBody:
@@ -77,9 +170,14 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/SmartSearchRequest"
+            example:
+              project: my-project
+              query: validate token
+              mode: hybrid
+              limit: 10
       responses:
         "200":
-          description: Ranked results.
+          description: Ranked search results.
           content:
             application/json:
               schema:
@@ -87,12 +185,9 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
-  /agentmemory/search:
+  /v1/agentmemory/search:
     post:
-      summary: Alias for /smart-search
-      description: |
-        Identical to `/smart-search`. Provided so clients that prefer the
-        shorter URL don't have to special-case the hybrid path.
+      summary: Alias for /v1/agentmemory/smart-search
       operationId: postSearch
       tags: [search]
       requestBody:
@@ -103,7 +198,7 @@ paths:
               $ref: "#/components/schemas/SmartSearchRequest"
       responses:
         "200":
-          description: Ranked results.
+          description: Ranked search results.
           content:
             application/json:
               schema:
@@ -111,31 +206,1535 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
 
-  /agentmemory/health:
-    get:
-      summary: Service health probe
-      description: |
-        Returns overall and per-component status. Neo4j is optional
-        (ADR-0003); when disabled, its component reports `degraded` and
-        the overall status is `degraded` rather than `down`.
-      operationId: getHealth
-      tags: [infra]
+  # ── Memory ─────────────────────────────────────────────────────────────────
+
+  /v1/agentmemory/remember:
+    post:
+      summary: Explicitly create a memory
+      operationId: postRemember
+      tags: [memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RememberRequest"
       responses:
-        "200":
-          description: Health snapshot (always 200; the body reports degradation).
+        "201":
+          description: Memory created.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HealthResponse"
-              example:
-                status: degraded
-                version: dev
-                components:
-                  - name: api
-                    status: ok
-                  - name: neo4j
-                    status: degraded
-                    message: "disabled (NEO4J_ENABLED=false); graph enrichment disabled"
+                $ref: "#/components/schemas/RememberResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/agentmemory/forget:
+    post:
+      summary: Delete a memory by ID
+      operationId: postForget
+      tags: [memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForgetRequest"
+      responses:
+        "204":
+          description: Memory deleted (or was already absent).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/agentmemory/memories:
+    get:
+      summary: List memories for a project
+      operationId: listMemories
+      tags: [memory]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [architecture, pattern, preference, bug, workflow, fact]
+        - name: tier
+          in: query
+          schema:
+            type: string
+            enum: [working, episodic, semantic, procedural]
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Paginated memory list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Memory"
+                  total:
+                    type: integer
+
+  /v1/agentmemory/memory/{id}:
+    get:
+      summary: Get a single memory by ID
+      operationId: getMemory
+      tags: [memory]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Memory record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Memory"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Sessions ───────────────────────────────────────────────────────────────
+
+  /v1/agentmemory/session/start:
+    post:
+      summary: Start a new agent session
+      operationId: postSessionStart
+      tags: [sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId:
+                  type: string
+                project:
+                  type: string
+                cwd:
+                  type: string
+      responses:
+        "201":
+          description: Session created. When context injection is enabled, `injectedContext` is populated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  injectedContext:
+                    type: object
+                    description: Memory context injected into the agent at session start.
+
+  /v1/agentmemory/session/end:
+    post:
+      summary: End a session and trigger consolidation
+      operationId: postSessionEnd
+      tags: [sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId:
+                  type: string
+                summaryHint:
+                  type: string
+                  description: Optional hint passed to the LLM summarizer.
+      responses:
+        "202":
+          description: Consolidation pipeline triggered asynchronously.
+
+  /v1/agentmemory/session/{id}:
+    get:
+      summary: Get a session summary
+      operationId: getSession
+      tags: [sessions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Session summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionSummary"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/agentmemory/sessions:
+    get:
+      summary: List sessions for a project
+      operationId: listSessions
+      tags: [sessions]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: Session list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionSummary"
+
+  # ── Observations ───────────────────────────────────────────────────────────
+
+  /v1/agentmemory/observations:
+    get:
+      summary: List raw observations for a session
+      operationId: listObservations
+      tags: [observations]
+      parameters:
+        - name: session
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: Observation list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  observations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RawObservation"
+
+  /v1/agentmemory/observation/{id}:
+    get:
+      summary: Get a single raw observation
+      operationId: getObservation
+      tags: [observations]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Observation record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RawObservation"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/agentmemory/file-history:
+    get:
+      summary: Observations that touched a specific file
+      operationId: getFileHistory
+      tags: [observations]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: file
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: Observations referencing the file.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  observations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RawObservation"
+
+  # ── Context ────────────────────────────────────────────────────────────────
+
+  /v1/agentmemory/context:
+    post:
+      summary: Assemble memory context for prompt injection
+      description: |
+        Runs a hybrid search and assembles the top results into a context block
+        ready for injection into an agent system prompt.
+      operationId: postContext
+      tags: [context]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, query]
+              properties:
+                project:
+                  type: string
+                query:
+                  type: string
+                limit:
+                  type: integer
+                  default: 10
+                sessionId:
+                  type: string
+      responses:
+        "200":
+          description: Assembled context block.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  context:
+                    type: string
+                  sources:
+                    type: integer
+                    description: Number of memory records included.
+
+  # ── Preferences ────────────────────────────────────────────────────────────
+
+  /v1/agentmemory/preferences:
+    post:
+      summary: Record a user preference
+      operationId: addPreference
+      tags: [preferences]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PreferenceInput"
+      responses:
+        "201":
+          description: Preference stored.
+    get:
+      summary: Search preferences for a project
+      operationId: searchPreferences
+      tags: [preferences]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching preferences.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  preferences:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Preference"
+
+  /v1/agentmemory/preference/{id}:
+    delete:
+      summary: Delete a preference
+      operationId: deletePreference
+      tags: [preferences]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted.
+
+  # ── Facts ──────────────────────────────────────────────────────────────────
+
+  /v1/agentmemory/facts:
+    post:
+      summary: Record a subject–predicate–object fact
+      operationId: addFact
+      tags: [facts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FactInput"
+      responses:
+        "201":
+          description: Fact stored.
+    get:
+      summary: Search facts for a project
+      operationId: searchFacts
+      tags: [facts]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: subject
+          in: query
+          schema: { type: string }
+        - name: predicate
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching facts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  facts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Fact"
+
+  # ── Profile ────────────────────────────────────────────────────────────────
+
+  /v1/agentmemory/profile:
+    get:
+      summary: Aggregated project profile
+      description: Returns recent preferences, facts, and top memories for a project.
+      operationId: getProfile
+      tags: [profile]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Project profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project:
+                    type: string
+                  preferences:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Preference"
+                  facts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Fact"
+                  memories:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Memory"
+
+  # ── Orchestration (experimental) ───────────────────────────────────────────
+
+  /v1/agentmemory/actions:
+    get:
+      summary: List actions
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Action list.
+    post:
+      summary: Create an action
+      x-stability: experimental
+      tags: [orchestration]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Action created.
+
+  /v1/agentmemory/actions/{id}:
+    get:
+      summary: Get an action
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Action record.
+    patch:
+      summary: Update an action
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: project
+          in: query
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Updated action.
+
+  /v1/agentmemory/frontier:
+    get:
+      summary: Get the next actionable frontier item
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Frontier action or empty.
+
+  /v1/agentmemory/next:
+    get:
+      summary: Get the next recommended action
+      x-stability: experimental
+      tags: [orchestration]
+      responses:
+        "200":
+          description: Next action.
+
+  /v1/agentmemory/leases/{id}/acquire:
+    post:
+      summary: Acquire a lease on an action
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Lease acquired.
+        "409":
+          description: Already leased.
+
+  /v1/agentmemory/leases/{id}/release:
+    post:
+      summary: Release a lease
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "204":
+          description: Released.
+
+  /v1/agentmemory/routines:
+    get:
+      summary: List routines
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Routine list.
+    post:
+      summary: Upsert a routine
+      x-stability: experimental
+      tags: [orchestration]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Routine created or updated.
+
+  /v1/agentmemory/signals:
+    post:
+      summary: Send a signal to an agent
+      x-stability: experimental
+      tags: [orchestration]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Signal sent.
+    get:
+      summary: List inbox signals
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: to
+          in: query
+          schema: { type: string }
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Signal inbox.
+
+  /v1/agentmemory/checkpoints:
+    post:
+      summary: Create a checkpoint
+      x-stability: experimental
+      tags: [orchestration]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Checkpoint created.
+
+  /v1/agentmemory/checkpoints/{id}/satisfy:
+    post:
+      summary: Satisfy a checkpoint
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Checkpoint satisfied.
+
+  /v1/agentmemory/sentinels:
+    post:
+      summary: Create a sentinel condition
+      x-stability: experimental
+      tags: [orchestration]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Sentinel created.
+
+  /v1/agentmemory/sentinels/{id}/trigger:
+    post:
+      summary: Manually trigger a sentinel
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Triggered.
+
+  /v1/agentmemory/sketches:
+    post:
+      summary: Create a sketch (draft action)
+      x-stability: experimental
+      tags: [orchestration]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Sketch created.
+
+  /v1/agentmemory/sketches/{id}/promote:
+    post:
+      summary: Promote a sketch to a full action
+      x-stability: experimental
+      tags: [orchestration]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Promoted action.
+
+  /v1/agentmemory/actions/crystallize:
+    post:
+      summary: Crystallize completed actions into memories
+      x-stability: experimental
+      tags: [orchestration]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Crystallized.
+
+  # ── Team (experimental) ────────────────────────────────────────────────────
+
+  /v1/agentmemory/team/share:
+    post:
+      summary: Share a memory with teammates
+      x-stability: experimental
+      tags: [team]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Shared.
+
+  /v1/agentmemory/team/feed:
+    get:
+      summary: Get the team memory feed
+      x-stability: experimental
+      tags: [team]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: Shared memory feed.
+
+  /v1/agentmemory/team/revoke:
+    post:
+      summary: Revoke a shared memory
+      x-stability: experimental
+      tags: [team]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "204":
+          description: Revoked.
+
+  /v1/agentmemory/audit:
+    get:
+      summary: Audit log for the project
+      x-stability: experimental
+      tags: [team]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: Audit entries.
+
+  # ── Conversations (experimental) ───────────────────────────────────────────
+
+  /v1/agentmemory/messages:
+    post:
+      summary: Add a message to the conversation store
+      x-stability: experimental
+      tags: [conversations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Message stored.
+
+  /v1/agentmemory/conversation:
+    get:
+      summary: Get the current conversation
+      x-stability: experimental
+      tags: [conversations]
+      parameters:
+        - name: sessionId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Conversation messages.
+    delete:
+      summary: Clear the conversation
+      x-stability: experimental
+      tags: [conversations]
+      parameters:
+        - name: sessionId
+          in: query
+          schema: { type: string }
+      responses:
+        "204":
+          description: Cleared.
+
+  /v1/agentmemory/messages/search:
+    get:
+      summary: Search conversation messages
+      x-stability: experimental
+      tags: [conversations]
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: sessionId
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching messages.
+
+  # ── Entities (experimental) ────────────────────────────────────────────────
+
+  /v1/agentmemory/entities/duplicates:
+    get:
+      summary: List entity duplicate candidates
+      x-stability: experimental
+      tags: [entities]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Duplicate pairs.
+
+  /v1/agentmemory/entities/{id}/review-duplicate:
+    post:
+      summary: Resolve an entity duplicate
+      x-stability: experimental
+      tags: [entities]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Resolved.
+
+  /v1/agentmemory/entities/{id}/enrichment:
+    get:
+      summary: Get entity enrichment data
+      x-stability: experimental
+      tags: [entities]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Enrichment record.
+    post:
+      summary: Set entity enrichment data
+      x-stability: experimental
+      tags: [entities]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Updated.
+
+  /v1/agentmemory/entities/{id}/geocode:
+    post:
+      summary: Set geocode on an entity
+      x-stability: experimental
+      tags: [entities]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Geocoded.
+
+  /v1/agentmemory/entities/locations/near:
+    get:
+      summary: Find entities near a location
+      x-stability: experimental
+      tags: [entities]
+      parameters:
+        - name: lat
+          in: query
+          schema: { type: number }
+        - name: lon
+          in: query
+          schema: { type: number }
+        - name: radiusKm
+          in: query
+          schema: { type: number }
+      responses:
+        "200":
+          description: Nearby entities.
+
+  /v1/agentmemory/users:
+    post:
+      summary: Ensure a user record exists
+      x-stability: experimental
+      tags: [entities]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: User record.
+
+  /v1/agentmemory/users/{identifier}:
+    get:
+      summary: Get a user by identifier
+      x-stability: experimental
+      tags: [entities]
+      parameters:
+        - name: identifier
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: User record.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Slots / Working memory (experimental) ──────────────────────────────────
+
+  /v1/agentmemory/slots:
+    get:
+      summary: List all named slots
+      x-stability: experimental
+      tags: [slots]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Slot map.
+
+  /v1/agentmemory/slots/{name}:
+    get:
+      summary: Get a named slot
+      x-stability: experimental
+      tags: [slots]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Slot value.
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      summary: Set a named slot
+      x-stability: experimental
+      tags: [slots]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Slot set.
+
+  /v1/agentmemory/working/push:
+    post:
+      summary: Push a value onto the working-memory stack
+      x-stability: experimental
+      tags: [slots]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Pushed.
+
+  /v1/agentmemory/working/pop:
+    post:
+      summary: Pop a value from the working-memory stack
+      x-stability: experimental
+      tags: [slots]
+      responses:
+        "200":
+          description: Popped value.
+        "404":
+          description: Stack empty.
+
+  /v1/agentmemory/working:
+    delete:
+      summary: Clear the working-memory stack
+      x-stability: experimental
+      tags: [slots]
+      responses:
+        "204":
+          description: Cleared.
+
+  # ── Traces (experimental) ──────────────────────────────────────────────────
+
+  /v1/agentmemory/traces:
+    post:
+      summary: Start a trace
+      x-stability: experimental
+      tags: [traces]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Trace started.
+    get:
+      summary: Search traces
+      x-stability: experimental
+      tags: [traces]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching traces.
+
+  /v1/agentmemory/traces/{id}:
+    get:
+      summary: Get a trace by ID
+      x-stability: experimental
+      tags: [traces]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Trace record.
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /v1/agentmemory/traces/{id}/steps:
+    post:
+      summary: Record a trace step
+      x-stability: experimental
+      tags: [traces]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Step recorded.
+
+  /v1/agentmemory/traces/{id}/complete:
+    post:
+      summary: Complete a trace
+      x-stability: experimental
+      tags: [traces]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Trace completed.
+
+  # ── Patterns / Timeline (experimental) ─────────────────────────────────────
+
+  /v1/agentmemory/patterns:
+    get:
+      summary: List detected patterns
+      x-stability: experimental
+      tags: [patterns]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Pattern list.
+
+  /v1/agentmemory/patterns/detect:
+    post:
+      summary: Run pattern detection
+      x-stability: experimental
+      tags: [patterns]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Detected patterns.
+
+  /v1/agentmemory/timeline:
+    get:
+      summary: Chronological activity feed
+      x-stability: experimental
+      tags: [timeline]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: Timeline entries.
+
+  # ── Advanced retrieval (experimental) ──────────────────────────────────────
+
+  /v1/agentmemory/memories/{id}/facets:
+    post:
+      summary: Add a facet tag to a memory
+      x-stability: experimental
+      tags: [advanced-retrieval]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Facet added.
+
+  /v1/agentmemory/facets/query:
+    post:
+      summary: Query memories by facet
+      x-stability: experimental
+      tags: [advanced-retrieval]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Facet query results.
+
+  /v1/agentmemory/lessons:
+    post:
+      summary: Record a lesson learned
+      x-stability: experimental
+      tags: [advanced-retrieval]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Lesson stored.
+    get:
+      summary: Search lessons
+      x-stability: experimental
+      tags: [advanced-retrieval]
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching lessons.
+
+  /v1/agentmemory/skills:
+    post:
+      summary: Upsert a skill record
+      x-stability: experimental
+      tags: [advanced-retrieval]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Skill stored.
+    get:
+      summary: Search skills
+      x-stability: experimental
+      tags: [advanced-retrieval]
+      parameters:
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Matching skills.
+
+  # ── Export (experimental) ──────────────────────────────────────────────────
+
+  /v1/agentmemory/export:
+    get:
+      summary: Export all memories as JSONL
+      x-stability: experimental
+      tags: [export]
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: JSONL export stream.
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+
+  /v1/agentmemory/import:
+    post:
+      summary: Import memories from JSON
+      x-stability: experimental
+      tags: [export]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Import result.
+
+  /v1/agentmemory/import-jsonl:
+    post:
+      summary: Import memories from JSONL
+      x-stability: experimental
+      tags: [export]
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema: { type: string }
+      responses:
+        "200":
+          description: Import result.
+
+  /v1/agentmemory/snapshot/create:
+    post:
+      summary: Create a full database snapshot
+      x-stability: experimental
+      tags: [export]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "201":
+          description: Snapshot created.
+
+  /v1/agentmemory/snapshot/{id}:
+    get:
+      summary: Get a snapshot by ID
+      x-stability: experimental
+      tags: [export]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Snapshot record.
+
+  # ── Platform (experimental) ────────────────────────────────────────────────
+
+  /v1/agentmemory/vision/embed:
+    post:
+      summary: Embed an image for visual search
+      x-stability: experimental
+      tags: [platform]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Embedding stored.
+
+  /v1/agentmemory/vision/search:
+    post:
+      summary: Search memories by image
+      x-stability: experimental
+      tags: [platform]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Visual search results.
+
+  /v1/agentmemory/mesh/sync:
+    post:
+      summary: Sync memories with a peer node
+      x-stability: experimental
+      tags: [platform]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Sync result.
+
+  /v1/agentmemory/maintenance/dedup-entities:
+    post:
+      summary: Trigger entity deduplication
+      x-stability: experimental
+      tags: [platform]
+      responses:
+        "200":
+          description: Deduplication result.
+
+  /v1/agentmemory/maintenance/archive-conversations:
+    post:
+      summary: Archive old conversation messages
+      x-stability: experimental
+      tags: [platform]
+      responses:
+        "200":
+          description: Archive result.
+
+  /v1/agentmemory/maintenance/decay-lessons:
+    post:
+      summary: Trigger Ebbinghaus decay on lessons
+      x-stability: experimental
+      tags: [platform]
+      responses:
+        "200":
+          description: Decay result.
+
+  # ── Diagnose / Governance (experimental) ───────────────────────────────────
+
+  /v1/agentmemory/diagnose:
+    get:
+      summary: Self-diagnostic report
+      x-stability: experimental
+      tags: [diagnose]
+      responses:
+        "200":
+          description: Diagnostic report.
+
+  /v1/agentmemory/heal:
+    post:
+      summary: Attempt automated healing of diagnosed issues
+      x-stability: experimental
+      tags: [diagnose]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Healing result.
+
+  /v1/agentmemory/governance/delete:
+    post:
+      summary: Privileged hard-delete of memories or observations
+      x-stability: experimental
+      tags: [governance]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Delete result.
+
+  /v1/agentmemory/audit/full:
+    get:
+      summary: Full audit log (all projects)
+      x-stability: experimental
+      tags: [governance]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+      responses:
+        "200":
+          description: Full audit log.
+
+  # ── MCP (protocol endpoint) ────────────────────────────────────────────────
+
+  /v1/agentmemory/mcp:
+    get:
+      summary: MCP Streamable HTTP — SSE stream
+      description: |
+        Streamable HTTP MCP endpoint (spec 2025-06-18). GET opens an SSE stream;
+        POST sends MCP requests; DELETE closes the session. The standalone MCP
+        server on port 3114 is the recommended entry point for MCP clients.
+      operationId: mcpGet
+      tags: [infra]
+      responses:
+        "200":
+          description: SSE event stream.
+    post:
+      summary: MCP Streamable HTTP — send request
+      operationId: mcpPost
+      tags: [infra]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: MCP response.
 
 components:
   schemas:
@@ -156,7 +1755,6 @@ components:
             - notification
         sessionId:
           type: string
-          pattern: "^sess-[A-Za-z0-9_-]{4,}$"
         project:
           type: string
         cwd:
@@ -165,9 +1763,9 @@ components:
           type: string
           format: date-time
         data:
-          description: Hook-specific body. Free-form JSON; tool fields (tool_name, tool_input, tool_output, user_prompt) are extracted when present.
           type: object
           additionalProperties: true
+          description: Hook-specific payload. Tool fields (tool_name, tool_input, tool_output) are extracted when present.
 
     ObserveResponse:
       type: object
@@ -181,6 +1779,156 @@ components:
           type: boolean
         deduplicated:
           type: boolean
+
+    Memory:
+      type: object
+      required: [id, type, tier, title, content, strength, isLatest, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        project:
+          type: string
+        type:
+          type: string
+          enum: [architecture, pattern, preference, bug, workflow, fact]
+        tier:
+          type: string
+          enum: [working, episodic, semantic, procedural]
+        title:
+          type: string
+        content:
+          type: string
+        concepts:
+          type: array
+          items: { type: string }
+        files:
+          type: array
+          items: { type: string }
+        sessionIds:
+          type: array
+          items: { type: string }
+        sourceObservationIds:
+          type: array
+          items: { type: string }
+        strength:
+          type: number
+          format: double
+          description: Ebbinghaus strength (0–1). Memories below DECAY_EVICTION_THRESHOLD are evicted nightly.
+        isLatest:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        lastRetrievedAt:
+          type: string
+          format: date-time
+
+    RememberRequest:
+      type: object
+      required: [type, title, content]
+      properties:
+        project:
+          type: string
+        type:
+          type: string
+          enum: [architecture, pattern, preference, bug, workflow, fact]
+        tier:
+          type: string
+          enum: [working, episodic, semantic, procedural]
+          default: semantic
+        title:
+          type: string
+        content:
+          type: string
+        concepts:
+          type: array
+          items: { type: string }
+        files:
+          type: array
+          items: { type: string }
+        sessionIds:
+          type: array
+          items: { type: string }
+        strength:
+          type: number
+          format: double
+          default: 1.0
+
+    RememberResponse:
+      type: object
+      properties:
+        memoryId:
+          type: string
+        title:
+          type: string
+
+    ForgetRequest:
+      type: object
+      required: [memoryId]
+      properties:
+        memoryId:
+          type: string
+        actor:
+          type: string
+        reason:
+          type: string
+
+    SessionSummary:
+      type: object
+      required: [sessionId, title, narrative, createdAt]
+      properties:
+        sessionId:
+          type: string
+        title:
+          type: string
+        narrative:
+          type: string
+        keyDecisions:
+          type: array
+          items: { type: string }
+        filesModified:
+          type: array
+          items: { type: string }
+        concepts:
+          type: array
+          items: { type: string }
+        createdAt:
+          type: string
+          format: date-time
+
+    RawObservation:
+      type: object
+      required: [id, sessionId, hookType, timestamp]
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        project:
+          type: string
+        hookType:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        hasSecrets:
+          type: boolean
+          description: True if the privacy filter detected and redacted secrets.
+        compressed:
+          type: boolean
+        title:
+          type: string
+        narrative:
+          type: string
+        concepts:
+          type: array
+          items: { type: string }
+        files:
+          type: array
+          items: { type: string }
 
     SmartSearchRequest:
       type: object
@@ -239,6 +1987,82 @@ components:
           type: number
           format: double
 
+    PreferenceInput:
+      type: object
+      required: [project, preference]
+      properties:
+        project:
+          type: string
+        category:
+          type: string
+        preference:
+          type: string
+        confidence:
+          type: number
+          format: double
+          default: 1.0
+        metadata:
+          type: object
+          additionalProperties: true
+
+    Preference:
+      type: object
+      properties:
+        id:
+          type: string
+        project:
+          type: string
+        category:
+          type: string
+        preference:
+          type: string
+        confidence:
+          type: number
+          format: double
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+
+    FactInput:
+      type: object
+      required: [project, subject, predicate, object]
+      properties:
+        project:
+          type: string
+        subject:
+          type: string
+        predicate:
+          type: string
+        object:
+          type: string
+        confidence:
+          type: number
+          format: double
+          default: 1.0
+
+    Fact:
+      type: object
+      properties:
+        id:
+          type: string
+        project:
+          type: string
+        subject:
+          type: string
+        predicate:
+          type: string
+        object:
+          type: string
+        confidence:
+          type: number
+          format: double
+        createdAt:
+          type: string
+          format: date-time
+
     HealthResponse:
       type: object
       required: [status, version, components]
@@ -259,34 +2083,38 @@ components:
       properties:
         name:
           type: string
-          description: Subsystem name (api, postgres, neo4j, queue, python, ...)
+          description: "Subsystem name (api, postgres, neo4j, queue, python, …)"
         status:
           type: string
           enum: [ok, degraded, down]
         message:
           type: string
-          description: Optional explanation when not ok.
 
     ErrorEnvelope:
       type: object
       required: [error, message]
-      description: |
-        Standard JSON shape for every error response. `fallback=true` indicates
-        a degraded result was returned (e.g. synthetic compression after an
-        LLM timeout) rather than a hard failure.
+      description: Standard error shape for all error responses.
       properties:
         error:
           type: string
-          description: Stable machine-readable code (e.g. `validation_failed`).
+          description: Machine-readable error code (e.g. `validation_failed`, `not_found`).
         message:
           type: string
           description: Human-readable detail.
         fallback:
           type: boolean
+          description: True when a degraded result was returned instead of a hard failure.
 
   responses:
     BadRequest:
       description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+    NotFound:
+      description: Resource not found.
       content:
         application/json:
           schema:
@@ -304,5 +2132,5 @@ components:
       type: http
       scheme: bearer
       description: |
-        AGENTMEMORY_SECRET. Required on mutating routes once Task 33 wires
-        auth middleware. Read-only routes are unauthenticated for now.
+        Set `AGENTMEMORY_SECRET` on the server. Pass as `Authorization: Bearer <secret>`.
+        Leave the env var empty to disable auth in development.

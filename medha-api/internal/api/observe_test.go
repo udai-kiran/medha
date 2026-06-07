@@ -58,7 +58,7 @@ func postObserve(t *testing.T, h http.Handler, body any) *httptest.ResponseRecor
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/agentmemory/observe", bytes.NewReader(b))
+	req := httptest.NewRequest(http.MethodPost, "/v1/agentmemory/observe", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -106,7 +106,7 @@ func TestObserve_ValidCreatesRow(t *testing.T) {
 
 func TestObserve_MalformedPayloadIs400(t *testing.T) {
 	h, _, _, _ := newRouter(t)
-	req := httptest.NewRequest(http.MethodPost, "/agentmemory/observe", bytes.NewReader([]byte("{not-json")))
+	req := httptest.NewRequest(http.MethodPost, "/v1/agentmemory/observe", bytes.NewReader([]byte("{not-json")))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -251,7 +251,7 @@ func TestObserve_LatencyUnder50ms(t *testing.T) {
 			},
 		}
 		body, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/agentmemory/observe", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/v1/agentmemory/observe", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		start := time.Now()

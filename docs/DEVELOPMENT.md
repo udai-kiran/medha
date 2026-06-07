@@ -62,7 +62,7 @@ curl -s http://localhost:3111/agentmemory/health | jq
 curl -s http://localhost:5000/health | jq
 
 # Capture an observation
-curl -s -X POST http://localhost:3111/agentmemory/observe \
+curl -s -X POST http://localhost:3111/v1/agentmemory/observe \
   -H 'Content-Type: application/json' \
   -d '{
         "hookType": "post_tool_use",
@@ -77,7 +77,7 @@ curl -s -X POST http://localhost:3111/agentmemory/observe \
       }'
 
 # Search
-curl -s -X POST http://localhost:3111/agentmemory/smart-search \
+curl -s -X POST http://localhost:3111/v1/agentmemory/smart-search \
   -H 'Content-Type: application/json' \
   -d '{"project":"demo","query":"validate token","mode":"bm25"}' | jq
 ```

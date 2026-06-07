@@ -21,7 +21,7 @@ curl http://localhost:3111/agentmemory/health
 ```
 
 What you get:
-- Go API on `:3111` (REST + MCP-over-HTTP at `/agentmemory/mcp`).
+- Go API on `:3111` (REST + MCP-over-HTTP at `/v1/agentmemory/mcp`).
 - Viewer on `:3113`.
 - Python sidecar on `:5000`.
 - PostgreSQL in the `postgres_data` volume; no Neo4j.
