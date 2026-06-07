@@ -32,22 +32,27 @@ _agentmem_env_file() {
     [ -f "$cfg" ] && printf '%s' "$cfg"
 }
 
-if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ]; then
+if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ] || [ -z "${AGENTMEMORY_PROJECT:-}" ]; then
     _ENV=$(_agentmem_env_file)
     if [ -n "$_ENV" ]; then
-        [ -z "${AGENTMEMORY_URL:-}" ]    && AGENTMEMORY_URL=$(grep    '^AGENTMEMORY_URL='    "$_ENV" 2>/dev/null | cut -d= -f2-)
-        [ -z "${AGENTMEMORY_SECRET:-}" ] && AGENTMEMORY_SECRET=$(grep '^AGENTMEMORY_SECRET=' "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_URL:-}" ]     && AGENTMEMORY_URL=$(grep     '^AGENTMEMORY_URL='     "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_SECRET:-}" ]  && AGENTMEMORY_SECRET=$(grep  '^AGENTMEMORY_SECRET='  "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_PROJECT:-}" ] && AGENTMEMORY_PROJECT=$(grep '^AGENTMEMORY_PROJECT=' "$_ENV" 2>/dev/null | cut -d= -f2-)
     fi
 fi
 AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
 
-_REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null || true)
-_BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-if [ -n "$_REMOTE" ] && [ -n "$_BRANCH" ]; then
-    PROJECT="${_REMOTE}__${_BRANCH}"
+if [ -n "${AGENTMEMORY_PROJECT:-}" ]; then
+    PROJECT="$AGENTMEMORY_PROJECT"
 else
-    PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
-    PROJECT="${PROJECT}${_BRANCH:+__$_BRANCH}"
+    _REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null || true)
+    _BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    if [ -n "$_REMOTE" ] && [ -n "$_BRANCH" ]; then
+        PROJECT="${_REMOTE}__${_BRANCH}"
+    else
+        PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
+        PROJECT="${PROJECT}${_BRANCH:+__$_BRANCH}"
+    fi
 fi
 
 BODY=$(jq -cn --arg q "$QUERY" --arg p "$PROJECT" '{"query": $q, "project": $p, "limit": 5}')

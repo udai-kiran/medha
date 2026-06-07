@@ -8,7 +8,7 @@
 # Idempotent — purges memories tagged source:<basename> before re-inserting.
 #
 # Config (in priority order):
-#   1. AGENTMEMORY_URL / AGENTMEMORY_SECRET environment variables
+#   1. AGENTMEMORY_URL / AGENTMEMORY_SECRET / AGENTMEMORY_PROJECT env vars
 #   2. AGENTMEMORY_ENV_FILE env var pointing to a .env.mcp file
 #   3. .env.mcp found by walking up from the current working directory
 #   4. $XDG_CONFIG_HOME/agent-mem/.env.mcp  (~/.config/agent-mem/.env.mcp)
@@ -34,22 +34,27 @@ _agentmem_env_file() {
     [ -f "$cfg" ] && printf '%s' "$cfg"
 }
 
-if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ]; then
+if [ -z "${AGENTMEMORY_URL:-}" ] || [ -z "${AGENTMEMORY_SECRET:-}" ] || [ -z "${AGENTMEMORY_PROJECT:-}" ]; then
     _ENV=$(_agentmem_env_file)
     if [ -n "${_ENV:-}" ]; then
-        [ -z "${AGENTMEMORY_URL:-}" ]    && AGENTMEMORY_URL=$(grep    '^AGENTMEMORY_URL='    "$_ENV" 2>/dev/null | cut -d= -f2-)
-        [ -z "${AGENTMEMORY_SECRET:-}" ] && AGENTMEMORY_SECRET=$(grep '^AGENTMEMORY_SECRET=' "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_URL:-}" ]     && AGENTMEMORY_URL=$(grep     '^AGENTMEMORY_URL='     "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_SECRET:-}" ]  && AGENTMEMORY_SECRET=$(grep  '^AGENTMEMORY_SECRET='  "$_ENV" 2>/dev/null | cut -d= -f2-)
+        [ -z "${AGENTMEMORY_PROJECT:-}" ] && AGENTMEMORY_PROJECT=$(grep '^AGENTMEMORY_PROJECT=' "$_ENV" 2>/dev/null | cut -d= -f2-)
     fi
 fi
 AGENTMEMORY_URL="${AGENTMEMORY_URL:-http://localhost:3111}"
 
-_REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null || true)
-_BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-if [ -n "$_REMOTE" ] && [ -n "$_BRANCH" ]; then
-    PROJECT="${_REMOTE}__${_BRANCH}"
+if [ -n "${AGENTMEMORY_PROJECT:-}" ]; then
+    PROJECT="$AGENTMEMORY_PROJECT"
 else
-    PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
-    PROJECT="${PROJECT}${_BRANCH:+__$_BRANCH}"
+    _REMOTE=$(git -C "$CWD" remote get-url origin 2>/dev/null || true)
+    _BRANCH=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    if [ -n "$_REMOTE" ] && [ -n "$_BRANCH" ]; then
+        PROJECT="${_REMOTE}__${_BRANCH}"
+    else
+        PROJECT=$(git -C "$CWD" rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$CWD")
+        PROJECT="${PROJECT}${_BRANCH:+__$_BRANCH}"
+    fi
 fi
 
 # Common auth args as an array — safe for all curl calls.
@@ -62,7 +67,7 @@ _purge_source() {
     local resp
     resp=$(curl -s --max-time 10 \
         "${AUTH_ARGS[@]}" \
-        "$AGENTMEMORY_URL/agentmemory/memories?tier=procedural&project=${PROJECT}&limit=200" \
+        "$AGENTMEMORY_URL/v1/agentmemory/memories?tier=procedural&project=${PROJECT}&limit=200" \
         2>/dev/null) || return 0
 
     local ids
@@ -77,7 +82,7 @@ _purge_source() {
             '{memoryId:$id, actor:"seed-procedural", reason:"re-seed from source file"}')
         curl -s -o /dev/null --max-time 10 \
             "${AUTH_ARGS[@]}" \
-            -X POST "$AGENTMEMORY_URL/agentmemory/forget" \
+            -X POST "$AGENTMEMORY_URL/v1/agentmemory/forget" \
             -H "Content-Type: application/json" \
             -d "$body" 2>/dev/null
         printf '[seed-procedural] purged %s (%s)\n' "$id" "$source_tag" >&2
@@ -148,7 +153,7 @@ _remember() {
     local code
     code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
         "${AUTH_ARGS[@]}" \
-        -X POST "$AGENTMEMORY_URL/agentmemory/remember" \
+        -X POST "$AGENTMEMORY_URL/v1/agentmemory/remember" \
         -H "Content-Type: application/json" \
         -d "$body" 2>/dev/null)
     if [ "$code" = "201" ]; then

@@ -1,98 +1,182 @@
-# agent_mem
+# medha — agent memory
 
-Persistent, long-term memory for AI coding agents — hybrid Go + Python.
+Persistent, long-term memory for AI coding agents. Captures what Claude Code does, compresses it, and surfaces relevant context at the start of each prompt.
 
-- **Architecture**: see [`agent_mem.md`](./agent_mem.md)
-- **Product requirements**: see [`PRD.md`](./PRD.md)
-- **Implementation tasks**: see [`tasks/`](./tasks/)
-- **Decisions**: see [`docs/ADRs/`](./docs/ADRs/)
+## How it works
 
-## Stack
-
-| Component       | Tech                              |
-|-----------------|-----------------------------------|
-| API service     | Go 1.26.3, Chi router, PostgreSQL |
-| Extraction svc  | Python 3.14.5, FastAPI, spaCy/GLiNER |
-| State           | PostgreSQL + Neo4j (optional, ADR-0003) |
-| Async           | RabbitMQ (prod) or in-memory (dev) — ADR-0001 |
-| Entrypoints     | REST `/agentmemory/*`, MCP stdio + HTTP proxy |
-
-## Quick start (Docker Compose)
-
-```bash
-cp .env.example .env
-make compose-up           # full stack: Go + Python + Neo4j + RabbitMQ
-# or
-make compose-light        # lightweight: Go + Python only (no Neo4j)
+```
+Claude Code (hooks) → POST /observe → privacy filter → dedup → PostgreSQL
+                                                              ↓
+                                              async compression (Python)
+                                                              ↓
+                                    PgFTS + vector index + graph index
+                                                              ↓
+                              UserPromptSubmit hook ← recall-summary
 ```
 
-Health checks:
+At session end, a consolidation pipeline distils observations into long-term memories. A nightly decay job (Ebbinghaus model) evicts weak memories over time.
+
+---
+
+## For developers connecting their project to medha
+
+If medha is already running (your team has a shared instance, or you ran `medha_dev_setup.sh`), connect any Claude Code project in one command:
 
 ```bash
-curl http://localhost:3111/agentmemory/health
-curl http://localhost:5000/health
-open  http://localhost:3113     # viewer (Task 28)
+# From the medha repo
+./bin/connect.sh /path/to/your/project
+
+# Or from inside your project, pointing at the medha repo's bin/
+/path/to/medha/bin/connect.sh
 ```
 
-## Local development (without Docker)
+`connect.sh` will prompt for three things:
+
+| Prompt | Default | What it does |
+|--------|---------|--------------|
+| medha API URL | `http://localhost:3111` | Where the Go service is running |
+| medha secret | (blank) | `AGENTMEMORY_SECRET` bearer token |
+| Project name | `basename` of the target dir | Stable ID for your project's memories |
+
+It then:
+1. Writes `.env.mcp` into your project root (picked up by hooks automatically)
+2. Copies hooks and slash commands into `.claude/`
+3. Wires hook events into `.claude/settings.json`
+4. Registers the MCP server: `claude mcp add agent-mem --transport http <url>:3114/mcp`
+
+Restart Claude Code in that directory. The hooks fire automatically from then on.
+
+### Skip prompts (CI / scripted)
+
+```bash
+AGENTMEMORY_URL=http://192.168.2.91:3111 \
+AGENTMEMORY_SECRET=your-secret \
+AGENTMEMORY_PROJECT=myapp \
+./bin/connect.sh /path/to/your/project
+```
+
+### What gets installed
+
+| File | Purpose |
+|------|---------|
+| `.claude/hooks/agentmem-tool-hook` | `PostToolUse` → sends tool events as observations |
+| `.claude/hooks/agentmem-session-end-hook` | `Stop` → triggers consolidation pipeline |
+| `.claude/hooks/agentmem-notify-hook` | `Notification` → captures compaction summaries |
+| `.claude/hooks/agentmem-recall-hook` | `UserPromptSubmit` → injects relevant memories |
+| `.claude/hooks/agentmem-md-procedural-hook` | `Edit/Write` on `.md` → re-seeds procedural memory |
+| `.claude/hooks/agentmem-seed-procedural` | CLI: seeds CLAUDE.md sections as procedural memory |
+| `.env.mcp` | `AGENTMEMORY_URL`, `AGENTMEMORY_SECRET`, `AGENTMEMORY_PROJECT` |
+
+### Project naming
+
+`AGENTMEMORY_PROJECT` is the namespace for all memories from that repo. Hooks
+read it from `.env.mcp` first; if absent they derive it from `git remote + branch`.
+Setting it explicitly gives you a stable, human-readable name across branch switches.
+
+---
+
+## For medha contributors (running the stack)
 
 ### Prerequisites
 
-- **Go 1.26.3** — pinned in `.tool-versions` and `mise.toml`; install via [mise](https://mise.jdx.dev/) or [asdf](https://asdf-vm.com/).
-- **Python 3.14.5** — same.
-- **uv** — Python package manager. Install: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+- Docker + docker compose v2
+- `jq`, `curl`, `openssl`
+- A running [Bifrost](https://github.com/maximhq/bifrost) gateway (LLM proxy)
+- PostgreSQL reachable from the containers
 
-### Setup
-
-```bash
-make setup    # go mod download + uv sync --all-extras
-make lint     # golangci-lint + ruff + mypy
-make test     # go test + pytest
-```
-
-### Run services
+### First-time setup
 
 ```bash
-make run-go   # API on :3111, viewer placeholder on :3113
-make run-py   # Python service on :5000
-make worker   # async job consumer (appears in Task 12)
+./medha_dev_setup.sh
 ```
+
+This will:
+1. Prompt for Bifrost URL, LLM model, Postgres connection, Neo4j toggle
+2. Generate `AGENTMEMORY_SECRET` (`openssl rand -hex 32`)
+3. Write `.env` (full service config) and `.env.mcp` (hook config + service config for the MCP container)
+4. Start the stack: `docker compose -f docker-compose.local.yml up -d --build`
+5. Wait for `GET /agentmemory/health` to return 200
+6. Connect the medha repo to itself via `bin/connect.sh`
+7. Seed `CLAUDE.md` as procedural memory
+
+```bash
+# Re-run is safe (idempotent). Force config overwrite:
+./medha_dev_setup.sh --force
+
+# Use a pre-built image instead of building from source:
+./medha_dev_setup.sh --pull <sha>
+```
+
+### Environment files
+
+| File | Used by |
+|------|---------|
+| `.env` | `docker-compose.local.yml` Go + Python services |
+| `.env.mcp` | `docker-compose.local.yml` MCP container; hooks walking up the directory tree |
+
+`.env.mcp` is `.env` plus `AGENTMEMORY_URL=http://localhost:3111`.
+
+### Local development (no Docker)
+
+```bash
+make setup       # go mod download + uv sync --all-extras
+make run-py      # Python FastAPI on :5000
+make run-go      # Go API on :3111, viewer on :3113
+make test        # go test ./... -race + pytest
+make lint        # golangci-lint + ruff + mypy
+```
+
+Integration tests require a live Postgres:
+
+```bash
+POSTGRES_TEST_HOST=localhost go test ./... -race
+```
+
+### Key env vars
+
+| Var | Default | Notes |
+|-----|---------|-------|
+| `PORT` | `3111` | Go API |
+| `VIEWER_PORT` | `3113` | WebSocket viewer |
+| `AGENTMEMORY_SECRET` | (empty) | Bearer token; empty disables auth |
+| `BIFROST_URL` | — | Required; LLM gateway |
+| `LLM_MODEL` | (empty) | e.g. `deepseek/deepseek-v4-pro` |
+| `EMBEDDING_MODEL` | (empty) | If unset, local hashing fallback |
+| `POSTGRES_*` | see `.env.example` | |
+| `NEO4J_ENABLED` | `false` | Optional; degrades gracefully (ADR-0003) |
+| `QUEUE_BACKEND` | `memory` | `rabbitmq` for prod (ADR-0001) |
+
+Full list in [CLAUDE.md](./CLAUDE.md) and [`.env.example`](./.env.example).
+
+---
+
+## Stack
+
+| Component | Tech |
+|-----------|------|
+| Go API | Go 1.26.3, Chi, PostgreSQL, PgFTS + vector + graph hybrid search |
+| Python sidecar | Python 3.14.5, FastAPI — NLP extraction, LLM compression, embeddings |
+| State | PostgreSQL (primary) + Neo4j (optional, ADR-0003) |
+| Async | In-memory queue (dev) or RabbitMQ (prod) — ADR-0001 |
+| MCP | Streamable HTTP, port 3114 — 30+ tools |
+| Search | PgFTS + vector + graph → RRF → provenance boost → Cohere reranker |
 
 ## Repository layout
 
 ```
-.
-├── medha-api/                   # Go service (cmd/api, cmd/worker, internal/*)
-├── medha-extraction/            # Python service (medha/*, tests/)
-├── docs/
-│   ├── ADRs/             # Architecture Decision Records
-│   └── api/openapi.yaml  # REST API contract (grown per task)
-├── deploy/               # K8s manifests, prod compose overrides
-├── tasks/                # Implementation task files
-├── reference/            # Source designs (DESIGN.md, LOW_LEVEL_DESIGN.md)
-├── PRD.md
-├── agent_mem.md
-├── FEATURE_ANALYSIS.md
-└── docker-compose.yml    # Local stack
+medha-api/          Go service (cmd/{api,mcp,worker}, internal/*)
+medha-extraction/   Python service (medha/*, tests/)
+bin/
+  connect.sh        Connect any project to a running medha instance
+  install.sh        Low-level: copy hooks + wire settings.json
+  agentmem-*        Hook scripts installed into .claude/hooks/
+  commands/         Slash commands installed into .claude/commands/
+medha_dev_setup.sh  Dev setup: configure + start the stack
+docs/
+  ADRs/             Architecture Decision Records
+  api/openapi.yaml  REST API contract
+deploy/             Docker compose overrides, prod config
 ```
-
-## Status
-
-All 35 implementation tasks (M0 → M6) are complete:
-
-- **M0** scaffolding (toolchain, skeletons, Docker Compose, CI).
-- **M1** capture pipeline (observe → privacy filter → dedup → PostgreSQL).
-- **M2** compression + hybrid search (BM25 + vector + graph fused via RRF).
-- **M3** consolidation + Ebbinghaus decay (4-tier memory model, nightly job).
-- **M4** REST API surface + MCP server (stdio + HTTP proxy) + optional Neo4j.
-- **M5** WebSocket viewer dashboard + Prometheus metrics + JSON logs.
-- **M6** entity enrichment (Wikipedia), orchestration primitives
-  (Actions/Leases/Routines/Signals), team sharing + audit, auth + rate
-  limiting + backup/restore, end-to-end test suite + docs.
-
-See [`tasks/`](./tasks/) for the per-task acceptance criteria,
-[`docs/ADRs/`](./docs/ADRs/) for design decisions, and
-[`docs/api/openapi.yaml`](./docs/api/openapi.yaml) for the REST contract.
 
 ## Documentation
 
@@ -100,3 +184,4 @@ See [`tasks/`](./tasks/) for the per-task acceptance criteria,
 - [Deployment guide](./docs/DEPLOYMENT.md)
 - [Architecture decisions](./docs/ADRs/)
 - [REST API contract](./docs/api/openapi.yaml)
+- [Full architecture](./agent_mem.md)

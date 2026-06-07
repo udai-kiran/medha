@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Install agent-mem hooks and slash commands into a Claude Code project.
+# Low-level file deployer — copies agent-mem hooks and slash commands into a
+# Claude Code project and wires the hook events in settings.json.
+#
+# Called by bin/connect.sh (user setup) and medha_dev_setup.sh (dev setup).
+# Does not prompt, does not write .env.mcp, does not register MCP.
 #
 # Usage:
 #   ./bin/install.sh [TARGET_DIR]
@@ -10,7 +14,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SOURCE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # repo root
 
 TARGET="${1:-$(pwd)}"
 TARGET="$(cd "$TARGET" && pwd)"
@@ -23,18 +26,25 @@ CMDS_DST="$TARGET/.claude/commands"
 SETTINGS="$TARGET/.claude/settings.json"
 
 # ── helpers ────────────────────────────────────────────────────────────────
-info()  { printf '\033[0;34m• %s\033[0m\n' "$*"; }
-ok()    { printf '\033[0;32m✓ %s\033[0m\n' "$*"; }
-warn()  { printf '\033[0;33m! %s\033[0m\n' "$*"; }
-die()   { printf '\033[0;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
+if [ -t 1 ]; then
+    C_BLUE='\033[0;34m'; C_GREEN='\033[0;32m'
+    C_YELLOW='\033[0;33m'; C_RESET='\033[0m'
+else
+    C_BLUE=''; C_GREEN=''; C_YELLOW=''; C_RESET=''
+fi
+info() { printf "${C_BLUE}•${C_RESET} %s\n" "$*"; }
+ok()   { printf "${C_GREEN}✓${C_RESET} %s\n" "$*"; }
+warn() { printf "${C_YELLOW}!${C_RESET} %s\n" "$*"; }
+die()  { printf '\033[0;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not found"
 
 # ── 1. copy hook binaries ───────────────────────────────────────────────────
-info "Installing hooks → $HOOKS_DST"
+info "Copying hooks → $HOOKS_DST"
 mkdir -p "$HOOKS_DST"
 
-for hook in agentmem-tool-hook agentmem-session-end-hook agentmem-notify-hook agentmem-recall-hook agentmem-md-procedural-hook agentmem-seed-procedural; do
+for hook in agentmem-tool-hook agentmem-session-end-hook agentmem-notify-hook \
+            agentmem-recall-hook agentmem-md-procedural-hook agentmem-seed-procedural; do
     src="$HOOKS_SRC/$hook"
     dst="$HOOKS_DST/$hook"
     [ -f "$src" ] || die "Hook not found: $src"
@@ -45,7 +55,7 @@ ok "Hooks copied"
 
 # ── 2. copy slash commands ──────────────────────────────────────────────────
 if [ -d "$CMDS_SRC" ] && ls "$CMDS_SRC"/*.md >/dev/null 2>&1; then
-    info "Installing commands → $CMDS_DST"
+    info "Copying commands → $CMDS_DST"
     mkdir -p "$CMDS_DST"
     for cmd in "$CMDS_SRC"/*.md; do
         dst_cmd="$CMDS_DST/$(basename "$cmd")"
@@ -130,14 +140,8 @@ else
         }
       }' > "$SETTINGS"
 fi
-
 ok "settings.json updated"
 
-# ── done ───────────────────────────────────────────────────────────────────
-echo ""
-echo "agent-mem installed in: $TARGET/.claude/"
 echo ""
 printf '  Hooks:    '; ls "$HOOKS_DST" | tr '\n' ' '; echo
-printf '  Commands: '; ls "$CMDS_DST"/*.md 2>/dev/null | xargs -n1 basename | tr '\n' ' '; echo
-echo ""
-echo "Restart Claude Code in that directory to pick up the changes."
+printf '  Commands: '; ls "$CMDS_DST"/*.md 2>/dev/null | xargs -n1 basename | tr '\n' ' ' || true; echo
