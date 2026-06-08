@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 
@@ -78,6 +79,36 @@ func (p *PgFTS) IndexWithProvenance(ctx context.Context, docID, project, content
             indexed_at = now()
     `, docID, project, content, provenance)
 	return err
+}
+
+// IndexedAt returns the indexed_at timestamp for each requested doc_id, keyed by
+// doc_id. IDs not present in the index are omitted from the map. Used by the
+// hybrid orchestrator to apply a recency boost across all engine legs (the
+// timestamp lives in the FTS table regardless of whether a hit came from FTS,
+// vector, or graph).
+func (p *PgFTS) IndexedAt(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	out := make(map[string]time.Time, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := p.store.DB.QueryContext(ctx,
+		`SELECT doc_id, indexed_at FROM pgfts_docs WHERE doc_id = ANY($1)`,
+		pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			id string
+			ts time.Time
+		)
+		if err := rows.Scan(&id, &ts); err != nil {
+			return nil, err
+		}
+		out[id] = ts
+	}
+	return out, rows.Err()
 }
 
 // Delete removes a document from the index.

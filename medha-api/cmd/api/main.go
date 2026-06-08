@@ -126,11 +126,13 @@ func main() {
 
 	hybrid := &search.Hybrid{
 		FTS: fts, Vector: vec, Graph: graphIdx,
-		QueryExpander:  queryExpander,
-		Reranker:       reranker,
-		RerankPoolSize: cfg.RerankPoolSize,
-		K:              60,
-		PerGroupCap:    3,
+		QueryExpander:       queryExpander,
+		Reranker:            reranker,
+		RerankPoolSize:      cfg.RerankPoolSize,
+		K:                   60,
+		PerGroupCap:         3,
+		RecencyWeight:       cfg.SearchRecencyWeight,
+		RecencyHalfLifeDays: cfg.SearchRecencyHalfLifeDays,
 		LookupGroup: func(ctx context.Context, id string) string {
 			row, err := store.GetObservation(ctx, id)
 			if err != nil || row == nil {
@@ -229,8 +231,8 @@ func main() {
 			Broadcaster: viewerHub,
 			SessionEnd:  consolidation.SessionEndHandler{Pipeline: consolPipeline},
 		},
-		Search:      api.SearchDeps{Hybrid: hybrid, Store: store},
-		IndexBus:    indexBus,
+		Search:       api.SearchDeps{Hybrid: hybrid, Store: store},
+		IndexBus:     indexBus,
 		MCP:          mcpHandler,
 		Metrics:      metrics,
 		AuthSecret:   cfg.AgentMemorySecret,

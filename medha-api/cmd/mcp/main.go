@@ -65,7 +65,11 @@ func main() {
 		os.Exit(1)
 	}
 	graph := search.NewGraphIndex(store)
-	hybrid := &search.Hybrid{FTS: fts, Vector: vec, Graph: graph, K: 60}
+	hybrid := &search.Hybrid{
+		FTS: fts, Vector: vec, Graph: graph, K: 60,
+		RecencyWeight:       cfg.SearchRecencyWeight,
+		RecencyHalfLifeDays: cfg.SearchRecencyHalfLifeDays,
+	}
 
 	srv := mcp.NewMemoryServer("agent_mem", "0.1.0", mcp.MemoryToolsDeps{
 		Store:         store,
