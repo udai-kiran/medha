@@ -95,7 +95,7 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 - **`models/`** — Shared domain types: `Memory` (with `MemoryType` and `MemoryTier` enums), `SessionSummary`, `RawObservation`. Memory tiers are `working | episodic | semantic | procedural`; types are `architecture | pattern | preference | bug | workflow | fact`.
 - **`api/`** — Chi router wired in `router.go`. All routes live under `/agentmemory` with Bearer auth + rate limiting (120 req/min). The `/internal` sub-router is Python→Go callback only. `RouterDeps` struct injects all collaborators; each feature area registers itself via a typed API struct (e.g. `MemoryAPI`, `SessionAPI`).
 - **`config/`** — Single source of truth for all env vars (`FromEnv()`). Feature flags and decay constants live here alongside connection settings.
-- **`search/`** — Three independent indexes: BM25 (keyword), vector (cosine similarity via Python `/embed`), graph (entity BFS). `Hybrid` in the same package fuses results using Reciprocal Rank Fusion (k=60) with a per-session diversity cap of 3.
+- **`search/`** — Three independent indexes: BM25 (keyword), vector (cosine similarity via Python `/embed`), graph (entity BFS). `Hybrid` in the same package fuses results using Reciprocal Rank Fusion (k=60), then applies post-fusion multipliers — a provenance boost (`user` 2.0× > `extracted` 1.0× > `episodic` 0.7×) and a recency boost (`1 + SEARCH_RECENCY_WEIGHT·exp(-ageDays·ln2/halfLife)`, from `pgfts_docs.indexed_at`, so recent sessions outrank older ones) — before an optional cross-encoder rerank and a per-session diversity cap of 3.
 - **`consolidation/`** — `Pipeline` runs the SessionEnd DAG: fetch observations → POST `/summarize` to Python → POST `/extract` to Python → distil memories → persist. Best-effort: individual steps fail without aborting the rest. `DecayEngine` applies Ebbinghaus decay (`strength *= rate^daysOld`; hard-evict below threshold) on a nightly scheduler.
 - **`dedup/`** — SHA-256 rolling 5-minute window per session to drop duplicate observations.
 - **`privacy/`** — Fail-closed filter applied before any persistence. Strips `<private>…</private>` blocks, redacts API keys/JWTs/key=value secrets, and removes ANSI codes. Sets `HasSecrets` flag on the observation so downstream enrichment is skipped (FR-9).
@@ -164,6 +164,8 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 | `DECAY_RATE_PER_DAY` | `0.95` | Ebbinghaus base rate |
 | `DECAY_EVICTION_THRESHOLD` | `0.1` | Hard-evict memories below this strength |
 | `LESSON_DECAY_ENABLED` | `true` | Toggle nightly decay scheduler |
+| `SEARCH_RECENCY_WEIGHT` | `0.3` | Post-RRF recency boost; surfaces recent sessions above older ones. `0` disables (pure relevance) |
+| `SEARCH_RECENCY_HALFLIFE_DAYS` | `7` | Age (days) at which the recency bonus halves |
 | `CONSOLIDATION_ENABLED` | `true` | Toggle session-end pipeline |
 | `PYTHON_SERVICE_URL` | `http://localhost:5000` | Go→Python calls |
 | `BIFROST_URL` | **(required)** | Bifrost endpoint, e.g. `http://192.168.2.91:8080`; service won't start without it |

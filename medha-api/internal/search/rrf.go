@@ -2,7 +2,9 @@ package search
 
 import (
 	"context"
+	"math"
 	"sort"
+	"time"
 )
 
 // RRFFuse combines multiple ranked lists with Reciprocal Rank Fusion.
@@ -51,7 +53,7 @@ func DiversityBoost(hits []Hit, perGroup int, group func(id string) string) []Hi
 
 // Mode names accepted by the orchestrator.
 const (
-	ModeBM25   = "bm25"   // kept for API compat — routes to the PgFTS engine
+	ModeBM25   = "bm25" // kept for API compat — routes to the PgFTS engine
 	ModeVector = "vector"
 	ModeGraph  = "graph"
 	ModeHybrid = "hybrid"
@@ -80,6 +82,34 @@ type Hybrid struct {
 	K int
 	// LookupGroup maps a Hit id to its diversity group. nil disables grouping.
 	LookupGroup func(ctx context.Context, id string) string
+	// RecencyWeight controls the post-RRF recency boost. The fused score of each
+	// hit is multiplied by (1 + RecencyWeight·exp(-ageDays/RecencyHalfLifeDays)),
+	// where age is derived from the doc's indexed_at timestamp. 0 disables the
+	// boost entirely (pure relevance), preserving legacy ordering.
+	RecencyWeight float64
+	// RecencyHalfLifeDays is the age (in days) at which the recency bonus halves.
+	// Ignored when RecencyWeight is 0; defaults to 7 days when unset but enabled.
+	RecencyHalfLifeDays float64
+}
+
+// recencyBoost returns the score multiplier for a hit of the given age. A
+// freshly-indexed hit (age 0) gets the full 1+weight bonus; the bonus decays
+// exponentially with a configurable half-life so older sessions fade smoothly
+// toward the 1.0 (no-boost) baseline. This mirrors the recency term in the
+// Generative Agents retrieval score (Park et al., 2023).
+func recencyBoost(ageDays, weight, halfLifeDays float64) float64 {
+	if weight <= 0 {
+		return 1.0
+	}
+	if halfLifeDays <= 0 {
+		halfLifeDays = 7.0
+	}
+	if ageDays < 0 {
+		ageDays = 0
+	}
+	// exp(-age·ln2/halfLife): bonus halves every halfLifeDays.
+	decay := math.Exp(-ageDays * math.Ln2 / halfLifeDays)
+	return 1.0 + weight*decay
 }
 
 // Search routes by mode. "hybrid" (and "bm25" for backward compat) run the full
@@ -179,6 +209,30 @@ func (h *Hybrid) hybridSearch(ctx context.Context, project, query string, limit 
 			}
 		}
 		sort.SliceStable(fused, func(i, j int) bool { return fused[i].Score > fused[j].Score })
+	}
+
+	// Apply recency boost: recently-indexed memories/observations rise above
+	// older ones so the current and recent sessions outrank stale ones. The
+	// indexed_at timestamp lives in the FTS table and covers every leg (FTS,
+	// vector, graph), so one batch lookup serves the whole fused pool. Best-effort:
+	// a lookup failure leaves the relevance-only order untouched.
+	if h.RecencyWeight > 0 && h.FTS != nil && len(fused) > 0 {
+		ids := make([]string, len(fused))
+		for i := range fused {
+			ids[i] = fused[i].ID
+		}
+		if indexedAt, err := h.FTS.IndexedAt(ctx, ids); err == nil && len(indexedAt) > 0 {
+			now := time.Now()
+			for i := range fused {
+				ts, ok := indexedAt[fused[i].ID]
+				if !ok {
+					continue
+				}
+				ageDays := now.Sub(ts).Hours() / 24.0
+				fused[i].Score *= recencyBoost(ageDays, h.RecencyWeight, h.RecencyHalfLifeDays)
+			}
+			sort.SliceStable(fused, func(i, j int) bool { return fused[i].Score > fused[j].Score })
+		}
 	}
 
 	// Cross-encoder reranking. Best-effort: any failure falls back to RRF order.
