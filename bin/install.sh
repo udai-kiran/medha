@@ -76,14 +76,27 @@ END_HOOK="$HOOKS_DST/agentmem-session-end-hook"
 RECALL_HOOK="$HOOKS_DST/agentmem-recall-hook"
 MD_HOOK="$HOOKS_DST/agentmem-md-procedural-hook"
 
+# Legacy script names that install.sh used to deploy — removed, keep settings clean.
+LEGACY_HOOKS=("recall-memories.sh" "observe-tool.sh" "notify.sh" "session-end.sh")
+
 if [ -f "$SETTINGS" ]; then
+    # Strip legacy hook entries then add/idempotently merge current hooks.
     MERGED=$(jq \
       --arg tool   "$TOOL_HOOK"   \
       --arg notify "$NOTIFY_HOOK" \
       --arg end    "$END_HOOK"    \
       --arg recall "$RECALL_HOOK" \
       --arg md     "$MD_HOOK"     \
+      --argjson legacy '["recall-memories.sh","observe-tool.sh","notify.sh","session-end.sh"]' \
       '
+      def is_legacy: . as $cmd | $legacy | any(.[]; $cmd | endswith(.));
+
+      def strip_legacy: [
+        .[] |
+        .hooks = [.hooks[] | select((.command // "") | is_legacy | not)] |
+        select(.hooks | length > 0)
+      ];
+
       def add_hook(event; entry; cmd):
         if .hooks[event] == null then
           .hooks[event] = [entry]
@@ -94,7 +107,11 @@ if [ -f "$SETTINGS" ]; then
         end;
 
       .hooks //= {} |
+      .hooks |= with_entries(.value = (.value | strip_legacy)) |
       add_hook("UserPromptSubmit";
+        { hooks: [{ type: "command", command: $recall }] };
+        $recall) |
+      add_hook("UserPromptExpansion";
         { hooks: [{ type: "command", command: $recall }] };
         $recall) |
       add_hook("PostToolUse";
@@ -125,6 +142,9 @@ else
           UserPromptSubmit: [
             { hooks: [{ type: "command", command: $recall }] }
           ],
+          UserPromptExpansion: [
+            { hooks: [{ type: "command", command: $recall }] }
+          ],
           PostToolUse: [
             { matcher: "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
               hooks: [{ type: "command", command: $tool }] },
@@ -140,6 +160,15 @@ else
         }
       }' > "$SETTINGS"
 fi
+
+# Remove legacy script files from the hooks directory.
+for legacy in "${LEGACY_HOOKS[@]}"; do
+    legacy_path="$HOOKS_DST/$legacy"
+    if [ -f "$legacy_path" ]; then
+        rm "$legacy_path"
+        warn "Removed legacy hook: $legacy"
+    fi
+done
 ok "settings.json updated"
 
 echo ""

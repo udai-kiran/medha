@@ -5,38 +5,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/recall-memories.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-recall-hook"
           }
         ]
       }
     ],
     "PostToolUse": [
-      {
-        "matcher": "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/observe-tool.sh"
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/udai/work/my-agent-memory/bin/agentmem-md-procedural-hook"
-          }
-        ]
-      },
       {
         "matcher": "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
         "hooks": [
@@ -61,14 +35,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/notify.sh"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-notify-hook"
           }
         ]
@@ -79,15 +45,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/session-end.sh"
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-session-end-hook"
           }
         ]
-      },
+      }
+    ],
+    "UserPromptExpansion": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-session-end-hook"
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-recall-hook"
           }
         ]
       }

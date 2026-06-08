@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook — fetches relevant memories from agent-mem and injects
-# them as context before Claude processes the user's prompt.
+# UserPromptSubmit / UserPromptExpansion hook — fetches relevant memories from
+# agent-mem and injects them as context before Claude processes the prompt.
+# Outputs well-formed hookSpecificOutput JSON so Claude Code uses the proper
+# additionalContext injection path (not the legacy plain-text path).
 # Exits 0 on any error (silent fail) so it never blocks the prompt.
 
 command -v jq >/dev/null 2>&1 || exit 0
@@ -9,13 +11,13 @@ command -v curl >/dev/null 2>&1 || exit 0
 INPUT=$(cat)
 printf '%s' "$INPUT" | jq empty 2>/dev/null || exit 0
 
-PROMPT=$(printf '%s' "$INPUT" | jq -r '.prompt // empty')
-[ -z "$PROMPT" ] && exit 0
+# Works for both UserPromptSubmit (.prompt) and UserPromptExpansion (.expansion).
+QUERY=$(printf '%s' "$INPUT" | jq -r '(.prompt // .expansion // "") | .[0:300]')
+[ -z "$QUERY" ] && exit 0
 
-printf '[recall-memories] INPUT: %s\n' "$PROMPT" >&2
+EVENT=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // "UserPromptSubmit"')
 
-# Truncate to 300 chars — enough signal for search, avoids oversized queries.
-QUERY=$(printf '%s' "$PROMPT" | cut -c1-300)
+printf '[agentmem-recall] query (%s): %s\n' "$EVENT" "$QUERY" >&2
 
 CWD="$(pwd)"
 
@@ -65,13 +67,23 @@ CURL_ARGS+=(-d "$BODY")
 
 RESPONSE=$(curl "${CURL_ARGS[@]}" 2>/dev/null) || exit 0
 
-# If no results or malformed response, exit silently.
-RESULT_COUNT=$(printf '%s' "$RESPONSE" | jq -r '.results | length' 2>/dev/null)
-[ -z "$RESULT_COUNT" ] || [ "$RESULT_COUNT" -eq 0 ] && exit 0
+# Require at least one result with relevance >= 0.05 to avoid injecting noise.
+MAX_RELEVANCE=$(printf '%s' "$RESPONSE" | jq -r '[.results[]?.relevance // 0] | max // 0' 2>/dev/null)
+PASSES_THRESHOLD=$(printf '%s' "$MAX_RELEVANCE" | awk '{print ($1 >= 0.05) ? "yes" : "no"}')
+if [ "$PASSES_THRESHOLD" != "yes" ]; then
+    printf '[agentmem-recall] max relevance %.4f below threshold — skipping\n' "$MAX_RELEVANCE" >&2
+    exit 0
+fi
 
 SUMMARY=$(printf '%s' "$RESPONSE" | jq -r '.summary // empty' 2>/dev/null)
 [ -z "$SUMMARY" ] && exit 0
 
-printf '[recall-memories] OUTPUT:\n%s\n' "$SUMMARY" >&2
-printf '[agent-mem] Relevant context from memory:\n%s\n' "$SUMMARY"
-exit 0
+printf '[agentmem-recall] injecting context (%s results, max relevance %.4f)\n' \
+    "$(printf '%s' "$RESPONSE" | jq '.results | length' 2>/dev/null)" \
+    "$MAX_RELEVANCE" >&2
+
+CTX="[agent-mem] Relevant context from memory:
+$SUMMARY"
+
+jq -cn --arg event "$EVENT" --arg ctx "$CTX" \
+  '{"hookSpecificOutput": {"hookEventName": $event, "additionalContext": $ctx}}'
