@@ -30,7 +30,7 @@ func TestPythonTSQueryExpander_Roundtrip(t *testing.T) {
 			http.Error(w, "empty query", http.StatusBadRequest)
 			return
 		}
-		json.NewEncoder(w).Encode(tsqExpandResponse{
+		_ = json.NewEncoder(w).Encode(tsqExpandResponse{
 			Queries: []string{"jwt & authentication", "token & validation"},
 		})
 	}))

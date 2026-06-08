@@ -48,7 +48,7 @@ func TestRecallSummary_LLMSummary(t *testing.T) {
 			http.Error(w, "unexpected path", http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"summary": "JWT middleware uses jose for token validation in src/auth.ts.",
 		})
 	}))
