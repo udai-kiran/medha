@@ -78,7 +78,7 @@ func (e *DecayEngine) Run(ctx context.Context) (DecayReport, error) {
 	rows, err := e.Store.DB.QueryContext(ctx, `
         SELECT id, strength, created_at, last_retrieved_at, tier
         FROM memories
-        WHERE tier IN ('semantic', 'procedural') AND is_latest = 1
+        WHERE tier IN ('semantic', 'procedural') AND provenance != 'user' AND is_latest = 1
     `)
 	if err != nil {
 		return report, err

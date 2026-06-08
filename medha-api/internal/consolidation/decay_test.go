@@ -96,6 +96,30 @@ func TestDecay_RetrievalReinforces(t *testing.T) {
 	}
 }
 
+func TestDecay_UserMemoryExempt(t *testing.T) {
+	store := openDecayStore(t)
+	e := NewDecayEngine(store, DefaultDecayConfig(), nil)
+	ctx := context.Background()
+
+	// 90-day-old user memory — same age that evicts an extracted memory.
+	_ = store.InsertMemory(ctx, &state.MemoryRow{
+		ID: "mem-user", Project: "p", Type: "fact", Tier: "semantic",
+		Provenance: state.ProvenanceUser,
+		Title:      "user fact", Strength: 0.9, CreatedAt: time.Now().UTC().Add(-90 * 24 * time.Hour),
+	})
+
+	report, err := e.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Evicted != 0 {
+		t.Errorf("user memory should not be evicted, report = %+v", report)
+	}
+	if _, err := store.GetMemory(ctx, "mem-user"); err != nil {
+		t.Errorf("user memory should still exist: %v", err)
+	}
+}
+
 func TestDecay_TickerScheduler(t *testing.T) {
 	// Verify the scheduler can be constructed and Stopped without leaking.
 	store := openDecayStore(t)
