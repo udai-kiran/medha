@@ -134,7 +134,8 @@ def synthetic_session_summary(
 _SYSTEM_PROMPT = (
     "You summarise an agent coding session into structured JSON for long-term memory.\n"
     "Highlight the goal, the key decisions made, and the files modified.\n"
-    "Only include substantive decisions — choices about tools, libraries, approaches, or architecture.\n"
+    "Only include substantive decisions — choices about tools, libraries, "
+    "approaches, or architecture.\n"
     "If no decisions were made, leave decisions as an empty array. Never write placeholder text.\n"
     "Respond ONLY with a JSON object. No prose, no markdown fences."
 )
