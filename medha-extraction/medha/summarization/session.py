@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -85,7 +86,6 @@ def synthetic_session_summary(
         n = d.narrative.strip()
         if not n:
             continue
-        # Take up to first sentence.
         m = re.match(r"([^.!?]{8,200})[.!?]?", n)
         if m:
             narrative_parts.append(m.group(1).strip())
@@ -97,7 +97,6 @@ def synthetic_session_summary(
             seen_files.setdefault(f, None)
     files_modified = list(seen_files.keys())
 
-    # Decisions: scan facts + narratives for "decided to ...", "use ..." etc.
     key_decisions: list[str] = []
     decision_re = re.compile(
         r"\b(?:decide[ds]?\s+to|use|chose|chosen|adopt(?:ed)?|prefer)\b[^.!?\n]{15,160}",
@@ -133,77 +132,73 @@ def synthetic_session_summary(
 
 
 _SYSTEM_PROMPT = (
-    "You summarise an agent coding session into structured XML for long-term memory.\n"
+    "You summarise an agent coding session into structured JSON for long-term memory.\n"
     "Highlight the goal, the key decisions made, and the files modified.\n"
     "Only include substantive decisions — choices about tools, libraries, approaches, or architecture.\n"
-    "If no decisions were made, leave <decisions/> empty. Never write placeholder text like 'No decisions made'.\n"
-    "Respond ONLY with the XML envelope."
+    "If no decisions were made, leave decisions as an empty array. Never write placeholder text.\n"
+    "Respond ONLY with a JSON object. No prose, no markdown fences."
 )
+
+_USER_TEMPLATE = """\
+<observations>
+{obs_block}
+</observations>
+
+Produce a JSON object with exactly these keys:
+{{
+  "title": "short session title",
+  "narrative": "2-3 sentence overview",
+  "decisions": ["decision1", ...],
+  "files": ["path/to/file", ...],
+  "concepts": ["concept", ...]
+}}"""
 
 
 def _build_user_prompt(digests: list[ObservationDigest]) -> str:
-    lines = ["<observations>"]
+    lines = []
     for d in digests[:50]:  # cap to keep prompt size reasonable
         lines.append(
-            f"  <obs><title>{_xml_escape(d.title)}</title>"
-            f"<narrative>{_xml_escape(clip(d.narrative, 200))}</narrative>"
-            f"<files>{','.join(_xml_escape(f) for f in d.files[:5])}</files></obs>"
+            f'  {{"title": {json.dumps(d.title)}, '
+            f'"narrative": {json.dumps(clip(d.narrative, 200))}, '
+            f'"files": {json.dumps(d.files[:5])}}}'
         )
-    lines.append("</observations>")
-    lines.append("")
-    lines.append("Produce:")
-    lines.append(
-        "<summary>\n"
-        "  <title>short session title</title>\n"
-        "  <narrative>2-3 sentence overview</narrative>\n"
-        "  <decisions><d>...</d></decisions>\n"
-        "  <files><f>...</f></files>\n"
-        "  <concepts><c>...</c></concepts>\n"
-        "</summary>"
-    )
-    return "\n".join(lines)
+    return _USER_TEMPLATE.format(obs_block="\n".join(lines))
 
 
-def _xml_escape(s: str) -> str:
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-_SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.DOTALL)
-_TAG_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
-_LIST_TAG_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
+def _strip_fences(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+    text = re.sub(r"\n?```\s*$", "", text)
+    return text.strip()
 
 
 def _parse_llm(text: str, session_id: str) -> SessionSummary | None:
-    m = _SUMMARY_RE.search(text)
-    if not m:
+    try:
+        data = json.loads(_strip_fences(text))
+    except (json.JSONDecodeError, ValueError):
         return None
-    envelope = m.group(1)
 
-    def _scalar(tag: str) -> str:
-        sm = re.search(rf"<{tag}>(.*?)</{tag}>", envelope, re.DOTALL)
-        return (sm.group(1) or "").strip() if sm else ""
+    if not isinstance(data, dict):
+        return None
 
-    def _list(parent: str, item: str) -> list[str]:
-        pm = re.search(rf"<{parent}>(.*?)</{parent}>", envelope, re.DOTALL)
-        if not pm:
-            return []
-        inner = pm.group(1)
-        return [
-            m.group(1).strip()
-            for m in re.finditer(rf"<{item}>(.*?)</{item}>", inner, re.DOTALL)
-        ]
-
-    title = _scalar("title")
-    narrative = _scalar("narrative")
+    title = str(data.get("title") or "").strip()
+    narrative = str(data.get("narrative") or "").strip()
     if not title and not narrative:
         return None
+
+    def _strlist(key: str) -> list[str]:
+        val = data.get(key, [])
+        if not isinstance(val, list):
+            return []
+        return [str(v).strip() for v in val if v and str(v).strip()]
+
     return SessionSummary(
         sessionId=session_id,
         title=clip(title or "Session", 120),
         narrative=clip(narrative, 2000),
-        keyDecisions=_list("decisions", "d"),
-        filesModified=_list("files", "f"),
-        concepts=_list("concepts", "c"),
+        keyDecisions=_strlist("decisions"),
+        filesModified=_strlist("files"),
+        concepts=_strlist("concepts"),
     )
 
 
@@ -229,7 +224,7 @@ class SessionSummarizerConfig:
 
 
 class SessionSummarizer:
-    """LLM-or-synthetic session summarizer. Mirrors Task 13's LLMCompressor."""
+    """LLM-or-synthetic session summarizer."""
 
     def __init__(
         self,
@@ -253,7 +248,10 @@ class SessionSummarizer:
         try:
             text = await asyncio.wait_for(
                 self.client.complete(
-                    _SYSTEM_PROMPT, _build_user_prompt(digests), max_tokens=self.config.max_tokens
+                    _SYSTEM_PROMPT,
+                    _build_user_prompt(digests),
+                    max_tokens=self.config.max_tokens,
+                    json_mode=True,
                 ),
                 timeout=self.config.timeout_s,
             )
@@ -261,9 +259,7 @@ class SessionSummarizer:
             logger.warning("summarize.timeout", session_id=session_id)
             return synthetic_session_summary(session_id, digests)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "summarize.error", session_id=session_id, error=str(exc)
-            )
+            logger.warning("summarize.error", session_id=session_id, error=str(exc))
             return synthetic_session_summary(session_id, digests)
 
         parsed = _parse_llm(text, session_id)

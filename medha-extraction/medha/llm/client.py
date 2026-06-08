@@ -23,7 +23,9 @@ logger = structlog.get_logger(__name__)
 class LLMClient(Protocol):
     """Narrow interface any chat-completion provider must satisfy."""
 
-    async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str: ...
+    async def complete(
+        self, system: str, user: str, *, max_tokens: int = 1024, json_mode: bool = False
+    ) -> str: ...
 
     @property
     def name(self) -> str: ...

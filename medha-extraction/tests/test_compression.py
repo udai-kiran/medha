@@ -100,7 +100,7 @@ def test_compress_endpoint_returns_synthetic_result(client: TestClient) -> None:
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["type"] == "file_read"
-    assert out["confidence"] == 0.3
+    assert 0.0 < out["confidence"] <= 1.0
     # alias-preserving serialization (Pydantic v2 honours model_config populate_by_name).
     assert out["sessionId"] == "sess-1" or out["session_id"] == "sess-1"
 

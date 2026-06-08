@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -41,7 +42,9 @@ class _FakeClient(LLMClient):
         self.raise_exc = raise_exc
         self.calls = 0
 
-    async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:
+    async def complete(
+        self, system: str, user: str, *, max_tokens: int = 1024, json_mode: bool = False
+    ) -> str:
         self.calls += 1
         if self.raise_exc is not None:
             raise self.raise_exc
@@ -52,26 +55,16 @@ class _FakeClient(LLMClient):
         return "fake"
 
 
-_WELL_FORMED = """
-<compressed>
-  <type>file_read</type>
-  <title>Read auth.ts</title>
-  <subtitle>src/auth.ts</subtitle>
-  <facts>
-    <fact>Validates JWT tokens</fact>
-    <fact>Uses jose library</fact>
-  </facts>
-  <narrative>Examined authentication middleware implementing JWT validation.</narrative>
-  <concepts>
-    <concept>authentication</concept>
-    <concept>jwt</concept>
-  </concepts>
-  <files>
-    <file>src/auth.ts</file>
-  </files>
-  <importance>7</importance>
-</compressed>
-"""
+_WELL_FORMED = json.dumps({
+    "type": "file_read",
+    "title": "Read auth.ts",
+    "subtitle": "src/auth.ts",
+    "facts": ["Validates JWT tokens", "Uses jose library"],
+    "narrative": "Examined authentication middleware implementing JWT validation.",
+    "concepts": ["authentication", "jwt"],
+    "files": ["src/auth.ts"],
+    "importance": 7,
+})
 
 
 def test_parse_response_well_formed() -> None:
@@ -86,23 +79,28 @@ def test_parse_response_well_formed() -> None:
 
 
 def test_parse_response_no_envelope_returns_none() -> None:
-    assert parse_response("nope, no XML here", make_raw()) is None
+    assert parse_response("nope, no JSON here", make_raw()) is None
 
 
-def test_parse_response_lenient_recovers() -> None:
-    """Malformed XML (e.g. orphan tag) should still extract scalar fields."""
-    text = (
-        "<compressed>"
-        "<type>command</type>"
-        "<title>run tests</title>"
-        # missing close on importance
-        "<importance>9"
-        "</compressed>"
-    )
-    out = parse_response(text, make_raw())
+def test_parse_response_fenced_json_is_parsed() -> None:
+    """Models that wrap JSON in markdown fences should still parse."""
+    fenced = "```json\n" + _WELL_FORMED + "\n```"
+    out = parse_response(fenced, make_raw())
+    assert out is not None
+    assert out.type == "file_read"
+    assert out.title == "Read auth.ts"
+
+
+def test_parse_response_missing_optional_fields() -> None:
+    """JSON with only required fields should produce a valid result."""
+    minimal = json.dumps({"type": "command", "title": "run tests", "importance": 9})
+    out = parse_response(minimal, make_raw())
     assert out is not None
     assert out.type == "command"
     assert out.title == "run tests"
+    assert out.importance == 9
+    assert out.facts == []
+    assert out.concepts == []
 
 
 @pytest.mark.asyncio()
@@ -128,7 +126,9 @@ async def test_compressor_falls_back_on_timeout() -> None:
     settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
 
     class Slow(_FakeClient):
-        async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:  # noqa: D401
+        async def complete(
+            self, system: str, user: str, *, max_tokens: int = 1024, json_mode: bool = False
+        ) -> str:
             await asyncio.sleep(5)
             return self.response
 

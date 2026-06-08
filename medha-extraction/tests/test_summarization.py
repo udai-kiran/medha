@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -82,7 +84,9 @@ class _NoClient(LLMClient):
     def name(self) -> str:
         return "none"
 
-    async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:
+    async def complete(
+        self, system: str, user: str, *, max_tokens: int = 1024, json_mode: bool = False
+    ) -> str:
         raise NotImplementedError
 
 
@@ -102,13 +106,14 @@ async def test_summarizer_falls_back_on_error() -> None:
         def name(self) -> str:
             return "boom"
 
-        async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:
+        async def complete(
+            self, system: str, user: str, *, max_tokens: int = 1024, json_mode: bool = False
+        ) -> str:
             raise RuntimeError("nope")
 
     settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
     s = SessionSummarizer(client=Boom(), settings=settings)
     out = await s.summarize("sess-1", _digests())
-    # Synthetic path returned ⇒ deterministic title not "<unfilled>".
     assert out.title
 
 
@@ -119,16 +124,16 @@ async def test_summarizer_parses_llm_response() -> None:
         def name(self) -> str:
             return "good"
 
-        async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:
-            return (
-                "<summary>"
-                "<title>Implement JWT</title>"
-                "<narrative>We added JWT validation and chose jose.</narrative>"
-                "<decisions><d>Use jose</d><d>1h expiry</d></decisions>"
-                "<files><f>src/auth.ts</f></files>"
-                "<concepts><c>auth</c><c>jwt</c></concepts>"
-                "</summary>"
-            )
+        async def complete(
+            self, system: str, user: str, *, max_tokens: int = 1024, json_mode: bool = False
+        ) -> str:
+            return json.dumps({
+                "title": "Implement JWT",
+                "narrative": "We added JWT validation and chose jose.",
+                "decisions": ["Use jose", "1h expiry"],
+                "files": ["src/auth.ts"],
+                "concepts": ["auth", "jwt"],
+            })
 
     settings = Settings(_env_file=None, BIFROST_URL="http://localhost:8080")  # type: ignore[call-arg]
     s = SessionSummarizer(client=Good(), settings=settings)

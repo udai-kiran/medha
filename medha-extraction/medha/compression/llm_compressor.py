@@ -2,22 +2,17 @@
 
 The flow:
   1. Build a system+user prompt from the RawObservation.
-  2. Call the configured LLM with a timeout (60s default).
-  3. Parse an XML-flavoured response into a CompressedObservation.
+  2. Call the configured LLM with json_mode=True (response_format: json_object).
+  3. Parse the JSON response into a CompressedObservation via json.loads + Pydantic.
   4. On any failure (timeout, parse error, no API key), fall back to the
      synthetic path so the pipeline never blocks.
-
-The XML format mirrors agent_mem.md §"Phase 1B" so the parser stays simple.
-We accept slightly malformed XML (e.g. missing closing tags on optional
-fields) because LLMs occasionally truncate — fall through to synthetic
-rather than reject in that case.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
 import structlog
@@ -40,39 +35,36 @@ class LLMCompressorConfig:
 
 
 _SYSTEM_PROMPT = (
-    "You compress agent observations into structured XML for long-term memory.\n"
-    "Extract facts, narrative, concepts, files, and an importance (0-10).\n"
-    "Respond ONLY with the XML envelope. No prose before or after."
+    "You compress agent observations into structured JSON for long-term memory.\n"
+    "Extract facts, narrative, concepts, files, and an importance score (0-10).\n"
+    "Respond ONLY with a JSON object. No prose, no markdown fences."
 )
 
-_USER_TEMPLATE = (
-    "<observation>\n"
-    "  <hook>{hook}</hook>\n"
-    "  <tool>{tool}</tool>\n"
-    "  <input>{input}</input>\n"
-    "  <output>{output}</output>\n"
-    "</observation>\n\n"
-    "Produce:\n"
-    "<compressed>\n"
-    "  <type>file_read|file_edit|command|search|...</type>\n"
-    "  <title>short title</title>\n"
-    "  <subtitle>optional</subtitle>\n"
-    "  <facts><fact>...</fact><fact>...</fact></facts>\n"
-    "  <narrative>1-2 sentence summary</narrative>\n"
-    "  <concepts><concept>...</concept></concepts>\n"
-    "  <files><file>...</file></files>\n"
-    "  <importance>0-10</importance>\n"
-    "</compressed>"
-)
+_USER_TEMPLATE = """\
+Observation:
+  hook: {hook}
+  tool: {tool}
+  input: {input}
+  output: {output}
+
+Produce a JSON object with exactly these keys:
+{{
+  "type": "file_read|file_edit|command|search|...",
+  "title": "short title (max 120 chars)",
+  "subtitle": "optional subtitle",
+  "facts": ["concise fact", ...],
+  "narrative": "1-2 sentence summary",
+  "concepts": ["concept", ...],
+  "files": ["path/to/file", ...],
+  "importance": 5
+}}"""
 
 
 def build_prompt(raw: RawObservation) -> tuple[str, str]:
     """Return (system, user) prompt strings for ``raw``."""
     tool_input = ""
     if raw.tool_input is not None:
-        import json as _json
-
-        tool_input = _json.dumps(raw.tool_input, sort_keys=True)[:1000]
+        tool_input = json.dumps(raw.tool_input, sort_keys=True)[:1000]
     user = _USER_TEMPLATE.format(
         hook=raw.hook_type,
         tool=raw.tool_name or "",
@@ -82,96 +74,57 @@ def build_prompt(raw: RawObservation) -> tuple[str, str]:
     return _SYSTEM_PROMPT, user
 
 
-# Robust regex-based parser: ET is strict, and LLMs are not. We use ET when
-# the response is well-formed and fall through to regex on the optional inner
-# arrays. Top-level <compressed> failure is treated as a parse failure.
-_FACT_RE = re.compile(r"<fact>\s*(.*?)\s*</fact>", re.DOTALL)
-_CONCEPT_RE = re.compile(r"<concept>\s*(.*?)\s*</concept>", re.DOTALL)
-_FILE_RE = re.compile(r"<file>\s*(.*?)\s*</file>", re.DOTALL)
+def _strip_fences(text: str) -> str:
+    """Strip markdown code fences that some models add despite instructions."""
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+    text = re.sub(r"\n?```\s*$", "", text)
+    return text.strip()
 
 
 def parse_response(text: str, raw: RawObservation) -> CompressedObservation | None:
-    """Parse the LLM response into a CompressedObservation, or None on failure."""
-    # Find the <compressed>...</compressed> envelope; LLMs sometimes wrap it.
-    m = re.search(r"<compressed>.*?</compressed>", text, re.DOTALL)
-    if not m:
+    """Parse the LLM JSON response into a CompressedObservation, or None on failure."""
+    try:
+        data = json.loads(_strip_fences(text))
+    except (json.JSONDecodeError, ValueError):
         return None
-    envelope = m.group(0)
 
-    # Try ET for the well-formed case.
-    try:
-        root = ET.fromstring(envelope)  # noqa: S314 — input is LLM-generated, not user-supplied
-    except ET.ParseError:
-        # Fall back to regex extraction of the scalar fields.
-        return _parse_lenient(envelope, raw)
+    if not isinstance(data, dict):
+        return None
 
-    def _text(tag: str, default: str = "") -> str:
-        el = root.find(tag)
-        return (el.text or default).strip() if el is not None else default
-
-    def _list(tag: str, child: str) -> list[str]:
-        parent = root.find(tag)
-        if parent is None:
-            return []
-        return [(e.text or "").strip() for e in parent.findall(child) if (e.text or "").strip()]
+    title = str(data.get("title") or raw.tool_name or raw.hook_type or "").strip()
+    if not title:
+        return None
 
     try:
-        importance = int(_text("importance", "5") or 5)
-    except ValueError:
+        importance = int(data.get("importance", 5))
+        importance = max(0, min(10, importance))
+    except (TypeError, ValueError):
         importance = 5
+
+    def _strlist(key: str) -> list[str]:
+        val = data.get(key, [])
+        if not isinstance(val, list):
+            return []
+        return [str(v).strip() for v in val if v and str(v).strip()]
 
     return CompressedObservation(
         id=raw.id,
         sessionId=raw.session_id,
-        type=_text("type") or "tool_use",
-        title=clip(_text("title") or (raw.tool_name or raw.hook_type), 120),
-        subtitle=clip(_text("subtitle"), 200),
-        facts=_list("facts", "fact"),
-        narrative=clip(_text("narrative"), 1000),
-        concepts=_list("concepts", "concept"),
-        files=_list("files", "file"),
+        type=str(data.get("type") or "tool_use").strip(),
+        title=clip(title, 120),
+        subtitle=clip(str(data.get("subtitle") or ""), 200),
+        facts=_strlist("facts"),
+        narrative=clip(str(data.get("narrative") or ""), 1000),
+        concepts=_strlist("concepts"),
+        files=_strlist("files"),
         importance=importance,
         confidence=0.85,
     )
 
 
-def _parse_lenient(envelope: str, raw: RawObservation) -> CompressedObservation | None:
-    """Best-effort regex parse for slightly malformed XML."""
-
-    def _scalar(tag: str) -> str:
-        m = re.search(rf"<{tag}>(.*?)</{tag}>", envelope, re.DOTALL)
-        return m.group(1).strip() if m else ""
-
-    typ = _scalar("type") or "tool_use"
-    title = _scalar("title") or (raw.tool_name or raw.hook_type)
-    if not title:
-        return None
-    try:
-        importance = int(_scalar("importance") or "5")
-    except ValueError:
-        importance = 5
-
-    return CompressedObservation(
-        id=raw.id,
-        sessionId=raw.session_id,
-        type=typ,
-        title=clip(title, 120),
-        subtitle=clip(_scalar("subtitle"), 200),
-        facts=_FACT_RE.findall(envelope),
-        narrative=clip(_scalar("narrative"), 1000),
-        concepts=_CONCEPT_RE.findall(envelope),
-        files=_FILE_RE.findall(envelope),
-        importance=importance,
-        confidence=0.7,  # slightly lower because parse was lenient
-    )
-
-
 class LLMCompressor:
-    """LLM compressor with synthetic fallback on any error or absent client.
-
-    Construct with a concrete LLMClient (Task 19 wires Anthropic/OpenAI/Gemini)
-    or ``None`` to always use the synthetic fallback (M2 default).
-    """
+    """LLM compressor with synthetic fallback on any error or absent client."""
 
     def __init__(
         self,
@@ -195,7 +148,9 @@ class LLMCompressor:
         system, user = build_prompt(raw)
         try:
             text = await asyncio.wait_for(
-                self.client.complete(system, user, max_tokens=self.config.max_tokens),
+                self.client.complete(
+                    system, user, max_tokens=self.config.max_tokens, json_mode=True
+                ),
                 timeout=self.config.timeout_s,
             )
         except TimeoutError:

@@ -25,7 +25,9 @@ class OpenAICompatibleClient:
         host = self.base_url.split("//", 1)[-1].split("/")[0]
         return f"{host}/{self.model}"
 
-    async def complete(self, system: str, user: str, *, max_tokens: int = 1024) -> str:
+    async def complete(
+        self, system: str, user: str, *, max_tokens: int = 1024, json_mode: bool = False
+    ) -> str:
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -38,6 +40,8 @@ class OpenAICompatibleClient:
             ],
             "max_tokens": max_tokens,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(
