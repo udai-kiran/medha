@@ -5,7 +5,7 @@ package state
 // Rules:
 //   - Never edit a shipped migration — add a new one at the end.
 //   - This task (T6) owns only the core observation/session/memory/graph schema.
-//   - Search-index tables are added by Task 14 (BM25) and Task 15 (vector).
+//   - Search-index tables are added by the FTS (pgfts) and vector indexes.
 //   - Each migration must be idempotent-safe under the version guard in
 //     Migrate (we don't re-run executed versions, but transactions are still
 //     used so partial application can't corrupt the DB).

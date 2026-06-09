@@ -77,7 +77,7 @@ func NewMemoryServer(name, version string, deps MemoryToolsDeps) *sdkmcp.Server 
 func RegisterMemoryTools(s *sdkmcp.Server, deps MemoryToolsDeps) {
 	s.AddTool(&sdkmcp.Tool{
 		Name:        "smart-search",
-		Description: "Hybrid search over compressed observations (BM25 + vector + graph fused via RRF).",
+		Description: "Hybrid search over compressed observations (full-text + vector + graph fused via RRF).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"required": []string{"query"},

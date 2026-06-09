@@ -114,7 +114,7 @@ func (a InternalAPI) PostCompressed(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "id": id})
 }
 
-// buildIndexText assembles the searchable text for BM25 + vector indexing.
+// buildIndexText assembles the searchable text for FTS + vector indexing.
 // Centralised here so both the callback and any backfill share the same shape.
 func buildIndexText(_ *state.ObservationRow, cb CompressedCallback) string {
 	parts := []string{cb.Title, cb.Subtitle, cb.Narrative}
