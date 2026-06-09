@@ -161,8 +161,13 @@ func (s *Store) AddEdge(ctx context.Context, e Edge) error {
 	if e.SourceID == "" || e.TargetID == "" || e.Type == "" {
 		return errors.New("AddEdge: source, target, type required")
 	}
+	// Only relate entities that belong to the same project. If the endpoints
+	// disagree the WHERE excludes the pair, MATCH yields nothing, MERGE never
+	// fires, and Run returns no error — the edge is silently skipped, which is
+	// the intended "don't create it" behaviour, not a swallowed failure.
 	q := fmt.Sprintf(`
         MATCH (a:Entity {id: $src}), (b:Entity {id: $tgt})
+        WHERE a.project = b.project
         MERGE (a)-[r:%s]->(b)
         ON CREATE SET r.confidence = $conf, r.source_observation_id = $obs,
                       r.created_at = datetime()
