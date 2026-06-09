@@ -286,7 +286,8 @@ async def enrich(req: EnrichRequest) -> EnrichResponse:
     return EnrichResponse(fields=res.fields, source=res.source, cached=res.cached)
 
 
-_EXTRACT_MEMORY_SYSTEM_PROMPT = """You extract structure from a user's natural language memory note for a software engineering agent.
+_EXTRACT_MEMORY_SYSTEM_PROMPT = """You extract structure from a user's natural \
+language memory note for a software engineering agent.
 
 Given the raw note, produce:
 - type: one of architecture|pattern|preference|bug|workflow|fact
@@ -303,7 +304,10 @@ Type guidance:
 - fact: any other concrete piece of information
 
 Return JSON only. Example:
-{"type":"architecture","normalized_content":"JWT validation uses the jose library in src/auth.ts middleware.","concepts":["jwt","jose","middleware","authentication"],"facts":["jose library handles token validation"]}"""
+{"type":"architecture",\
+"normalized_content":"JWT validation uses the jose library in src/auth.ts middleware.",\
+"concepts":["jwt","jose","middleware","authentication"],\
+"facts":["jose library handles token validation"]}"""
 
 
 class ExtractMemoryRequest(BaseModel):
@@ -601,7 +605,7 @@ async def rerank(req: RerankRequest) -> RerankResponse:
 
     # Cohere/OpenRouter response: results[].{index, relevance_score}
     # `index` is a 0-based position into the input `documents` list.
-    results: list[RerankResult] = []
+    results = []
     for item in data.get("results", []):
         idx = item.get("index")
         score = item.get("relevance_score", 0.0)
