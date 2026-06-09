@@ -40,6 +40,9 @@ func (NoOpIndexBus) IndexMemory(ctx context.Context, id, project, text, provenan
 type InternalAPI struct {
 	Store    *state.Store
 	IndexBus IndexBus
+	// AbbreviationExpansion, when true, merges any abbreviations the LLM
+	// detected during compression into the project's glossary.
+	AbbreviationExpansion bool
 }
 
 // RegisterPublic mounts the /agentmemory/* projections of internal endpoints
@@ -68,6 +71,10 @@ type CompressedCallback struct {
 	Importance       int      `json:"importance"`
 	Confidence       float64  `json:"confidence"`
 	ImageDescription string   `json:"imageDescription,omitempty"`
+	// Abbreviations carries abbreviation→expansion pairs the LLM detected in
+	// this observation. Transient: merged into the project glossary, not
+	// persisted on the observation row.
+	Abbreviations map[string]string `json:"abbreviations,omitempty"`
 }
 
 // PostCompressed writes a compression result back to storage and triggers
@@ -102,12 +109,19 @@ func (a InternalAPI) PostCompressed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-index for search.
-	if a.IndexBus != nil {
+	// Re-index for search, and learn any abbreviations the LLM detected. Both
+	// need the row's project, so share one fetch.
+	if a.IndexBus != nil || (a.AbbreviationExpansion && len(cb.Abbreviations) > 0) {
 		row, err := a.Store.GetObservation(r.Context(), id)
 		if err == nil && row != nil {
-			text := buildIndexText(row, cb)
-			_ = a.IndexBus.IndexObservation(r.Context(), id, row.Project, text)
+			if a.IndexBus != nil {
+				text := buildIndexText(row, cb)
+				_ = a.IndexBus.IndexObservation(r.Context(), id, row.Project, text)
+			}
+			if a.AbbreviationExpansion && len(cb.Abbreviations) > 0 {
+				// Best-effort: a glossary write must not fail the callback.
+				_, _ = a.Store.MergeGlossary(r.Context(), row.Project, cb.Abbreviations)
+			}
 		}
 	}
 

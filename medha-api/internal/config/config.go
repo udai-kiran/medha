@@ -49,6 +49,12 @@ type Config struct {
 	ConsolidationEnabled     bool
 	LessonDecayEnabled       bool
 
+	// AbbreviationExpansionEnabled gates the per-project abbreviation glossary:
+	// the worker ships the project's known abbreviations to Python /compress for
+	// inline expansion, and the compression callback merges back any the LLM
+	// newly detects. When false, neither the fetch/send nor the merge happens.
+	AbbreviationExpansionEnabled bool
+
 	// Decay tuning — see ADR-0002
 	DecayRatePerDay        float64
 	DecayEvictionThreshold float64
@@ -84,43 +90,44 @@ type Config struct {
 // Validation is split out (Validate) so callers can format errors uniformly.
 func FromEnv() *Config {
 	return &Config{
-		Port:                      getInt("PORT", 3111),
-		ViewerPort:                getInt("VIEWER_PORT", 3113),
-		LogLevel:                  getString("LOG_LEVEL", "info"),
-		PostgresHost:              getString("POSTGRES_HOST", "localhost"),
-		PostgresPort:              getInt("POSTGRES_PORT", 5432),
-		PostgresUser:              getString("POSTGRES_USER", "medha"),
-		PostgresPassword:          getString("POSTGRES_PASSWORD", ""),
-		PostgresDB:                getString("POSTGRES_DB", "medha"),
-		PostgresSSLMode:           getString("POSTGRES_SSLMODE", "disable"),
-		Neo4jEnabled:              getBool("NEO4J_ENABLED", false),
-		Neo4jURI:                  getString("NEO4J_URI", "bolt://localhost:7687"),
-		Neo4jUsername:             getString("NEO4J_USERNAME", "neo4j"),
-		Neo4jPassword:             getString("NEO4J_PASSWORD", ""),
-		Neo4jDatabase:             getString("NEO4J_DATABASE", "medha"),
-		QueueBackend:              getString("QUEUE_BACKEND", "memory"),
-		RabbitMQURL:               getString("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
-		PythonServiceURL:          getString("PYTHON_SERVICE_URL", "http://localhost:5000"),
-		AgentMemoryAutoCompress:   getBool("AGENTMEMORY_AUTO_COMPRESS", false),
-		AgentMemorySlots:          getBool("AGENTMEMORY_SLOTS", false),
-		AgentMemoryReflect:        getBool("AGENTMEMORY_REFLECT", false),
-		AgentMemoryInjectContext:  getBool("AGENTMEMORY_INJECT_CONTEXT", false),
-		ConsolidationEnabled:      getBool("CONSOLIDATION_ENABLED", true),
-		LessonDecayEnabled:        getBool("LESSON_DECAY_ENABLED", true),
-		DecayRatePerDay:           getFloat("DECAY_RATE_PER_DAY", 0.95),
-		DecayEvictionThreshold:    getFloat("DECAY_EVICTION_THRESHOLD", 0.10),
-		DecayReviewLow:            getFloat("DECAY_REVIEW_LOW", 0.10),
-		DecayReviewHigh:           getFloat("DECAY_REVIEW_HIGH", 0.30),
-		TSQueryExpandEnabled:      getBool("TSQUERY_EXPAND_ENABLED", false),
-		RerankEnabled:             getBool("RERANK_ENABLED", false),
-		RerankPoolSize:            getInt("RERANK_POOL_SIZE", 30),
-		RerankTopK:                getInt("RERANK_TOP_K", 0),
-		SearchRecencyWeight:       getFloat("SEARCH_RECENCY_WEIGHT", 0.3),
-		SearchRecencyHalfLifeDays: getFloat("SEARCH_RECENCY_HALFLIFE_DAYS", 7.0),
-		AgentMemorySecret:         getString("AGENTMEMORY_SECRET", ""),
-		OTELExporterEndpoint:      getString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
-		OTELServiceName:           getString("OTEL_SERVICE_NAME", "agent-mem-go"),
-		ShutdownTimeout:           time.Duration(getInt("SHUTDOWN_TIMEOUT_SEC", 15)) * time.Second,
+		Port:                         getInt("PORT", 3111),
+		ViewerPort:                   getInt("VIEWER_PORT", 3113),
+		LogLevel:                     getString("LOG_LEVEL", "info"),
+		PostgresHost:                 getString("POSTGRES_HOST", "localhost"),
+		PostgresPort:                 getInt("POSTGRES_PORT", 5432),
+		PostgresUser:                 getString("POSTGRES_USER", "medha"),
+		PostgresPassword:             getString("POSTGRES_PASSWORD", ""),
+		PostgresDB:                   getString("POSTGRES_DB", "medha"),
+		PostgresSSLMode:              getString("POSTGRES_SSLMODE", "disable"),
+		Neo4jEnabled:                 getBool("NEO4J_ENABLED", false),
+		Neo4jURI:                     getString("NEO4J_URI", "bolt://localhost:7687"),
+		Neo4jUsername:                getString("NEO4J_USERNAME", "neo4j"),
+		Neo4jPassword:                getString("NEO4J_PASSWORD", ""),
+		Neo4jDatabase:                getString("NEO4J_DATABASE", "medha"),
+		QueueBackend:                 getString("QUEUE_BACKEND", "memory"),
+		RabbitMQURL:                  getString("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+		PythonServiceURL:             getString("PYTHON_SERVICE_URL", "http://localhost:5000"),
+		AgentMemoryAutoCompress:      getBool("AGENTMEMORY_AUTO_COMPRESS", false),
+		AgentMemorySlots:             getBool("AGENTMEMORY_SLOTS", false),
+		AgentMemoryReflect:           getBool("AGENTMEMORY_REFLECT", false),
+		AgentMemoryInjectContext:     getBool("AGENTMEMORY_INJECT_CONTEXT", false),
+		ConsolidationEnabled:         getBool("CONSOLIDATION_ENABLED", true),
+		LessonDecayEnabled:           getBool("LESSON_DECAY_ENABLED", true),
+		AbbreviationExpansionEnabled: getBool("ABBREVIATION_EXPANSION_ENABLED", true),
+		DecayRatePerDay:              getFloat("DECAY_RATE_PER_DAY", 0.95),
+		DecayEvictionThreshold:       getFloat("DECAY_EVICTION_THRESHOLD", 0.10),
+		DecayReviewLow:               getFloat("DECAY_REVIEW_LOW", 0.10),
+		DecayReviewHigh:              getFloat("DECAY_REVIEW_HIGH", 0.30),
+		TSQueryExpandEnabled:         getBool("TSQUERY_EXPAND_ENABLED", false),
+		RerankEnabled:                getBool("RERANK_ENABLED", false),
+		RerankPoolSize:               getInt("RERANK_POOL_SIZE", 30),
+		RerankTopK:                   getInt("RERANK_TOP_K", 0),
+		SearchRecencyWeight:          getFloat("SEARCH_RECENCY_WEIGHT", 0.3),
+		SearchRecencyHalfLifeDays:    getFloat("SEARCH_RECENCY_HALFLIFE_DAYS", 7.0),
+		AgentMemorySecret:            getString("AGENTMEMORY_SECRET", ""),
+		OTELExporterEndpoint:         getString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
+		OTELServiceName:              getString("OTEL_SERVICE_NAME", "agent-mem-go"),
+		ShutdownTimeout:              time.Duration(getInt("SHUTDOWN_TIMEOUT_SEC", 15)) * time.Second,
 	}
 }
 

@@ -33,10 +33,11 @@ func main() {
 	defer func() { _ = queue.Close() }()
 
 	worker := consolidation.NewWorker(consolidation.WorkerConfig{
-		PythonServiceURL:    cfg.PythonServiceURL,
-		InternalCallbackURL: "http://localhost" + cfg.Addr(),
-		HTTPTimeout:         60 * time.Second,
-		Logger:              logger,
+		PythonServiceURL:      cfg.PythonServiceURL,
+		InternalCallbackURL:   "http://localhost" + cfg.Addr(),
+		HTTPTimeout:           60 * time.Second,
+		Logger:                logger,
+		AbbreviationExpansion: cfg.AbbreviationExpansionEnabled,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

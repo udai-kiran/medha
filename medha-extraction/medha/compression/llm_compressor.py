@@ -34,9 +34,19 @@ class LLMCompressorConfig:
     max_tokens: int = 1024
 
 
+# The abbreviation-detection instruction is always present; the feature is gated
+# on the Go side (the worker skips sending the glossary and the callback skips
+# the merge when ABBREVIATION_EXPANSION_ENABLED=false). The only cost when
+# disabled is a few prompt tokens, which we accept rather than threading a
+# per-request "detect" flag through the wire.
 _SYSTEM_PROMPT = (
     "You compress agent observations into structured JSON for long-term memory.\n"
     "Extract facts, narrative, concepts, files, and an importance score (0-10).\n"
+    "Also detect abbreviations and their expansions. Only include an abbreviation "
+    "when you are confident of its expansion: prefer an expansion that appears in "
+    "the observation text itself, and otherwise use a well-known expansion only if "
+    "you are certain. OMIT anything you cannot confidently expand — never guess. "
+    "Return at most 20 abbreviations.\n"
     "Respond ONLY with a JSON object. No prose, no markdown fences."
 )
 
@@ -56,20 +66,53 @@ Produce a JSON object with exactly these keys:
   "narrative": "1-2 sentence summary",
   "concepts": ["concept", ...],
   "files": ["path/to/file", ...],
-  "importance": 5
+  "importance": 5,
+  "abbreviations": {{"ABBR": "Full Expansion", ...}}
 }}"""
 
+# Cap on abbreviation pairs accepted from a single LLM response, so a bad
+# response can't flood the glossary merge.
+_MAX_ABBREVIATIONS = 20
 
-def build_prompt(raw: RawObservation) -> tuple[str, str]:
-    """Return (system, user) prompt strings for ``raw``."""
+
+def expand_abbreviations(text: str, glossary: dict[str, str]) -> str:
+    """Inline-expand known abbreviations the first time each appears in ``text``.
+
+    For each ``abbr → expansion`` pair, the first whole-token, case-sensitive
+    occurrence of ``abbr`` becomes ``abbr (expansion)``. Occurrences the author
+    already parenthesised (``abbr (...)``) are left untouched so we never produce
+    ``MFA (X) (X)``. Substrings (e.g. ``API`` inside ``RAPID``) never match.
+    """
+    if not text or not glossary:
+        return text
+    for abbr, expansion in glossary.items():
+        if not abbr or not expansion:
+            continue
+        # Alphanumeric lookarounds (not \b) so symbol-bearing abbrevs like "C++"
+        # still anchor correctly; (?!\s*\() skips already-parenthesised abbrevs;
+        # count=1 expands only the first mention.
+        pattern = (
+            r"(?<![A-Za-z0-9])" + re.escape(abbr) + r"(?![A-Za-z0-9])(?!\s*\()"
+        )
+        text = re.sub(pattern, f"{abbr} ({expansion})", text, count=1)
+    return text
+
+
+def build_prompt(raw: RawObservation, glossary: dict[str, str] | None = None) -> tuple[str, str]:
+    """Return (system, user) prompt strings for ``raw``.
+
+    When ``glossary`` is provided, known abbreviations are inline-expanded in the
+    input/output text the LLM sees.
+    """
+    glossary = glossary or {}
     tool_input = ""
     if raw.tool_input is not None:
         tool_input = json.dumps(raw.tool_input, sort_keys=True)[:1000]
     user = _USER_TEMPLATE.format(
         hook=raw.hook_type,
         tool=raw.tool_name or "",
-        input=clip(tool_input, 1000),
-        output=clip(raw.tool_output or "", 2000),
+        input=expand_abbreviations(clip(tool_input, 1000), glossary),
+        output=expand_abbreviations(clip(raw.tool_output or "", 2000), glossary),
     )
     return _SYSTEM_PROMPT, user
 
@@ -120,7 +163,27 @@ def parse_response(text: str, raw: RawObservation) -> CompressedObservation | No
         files=_strlist("files"),
         importance=importance,
         confidence=0.85,
+        abbreviations=_parse_abbreviations(data.get("abbreviations")),
     )
+
+
+def _parse_abbreviations(val: object) -> dict[str, str]:
+    """Coerce the LLM's ``abbreviations`` field into a clean str→str map.
+
+    Drops non-string/empty entries and caps the count so a runaway response
+    can't flood the glossary merge. Validation of what counts as a real
+    abbreviation happens authoritatively on the Go side (MergeGlossary)."""
+    if not isinstance(val, dict):
+        return {}
+    out: dict[str, str] = {}
+    for abbr, expansion in val.items():
+        if len(out) >= _MAX_ABBREVIATIONS:
+            break
+        abbr_s = str(abbr).strip()
+        exp_s = str(expansion).strip()
+        if abbr_s and exp_s:
+            out[abbr_s] = exp_s
+    return out
 
 
 class LLMCompressor:
@@ -140,12 +203,18 @@ class LLMCompressor:
     def name(self) -> str:
         return f"llm:{self.client.name}" if self.client else "synthetic-fallback"
 
-    async def compress(self, raw: RawObservation) -> CompressedObservation:
-        """Compress with LLM if available, falling back to synthetic on any failure."""
+    async def compress(
+        self, raw: RawObservation, glossary: dict[str, str] | None = None
+    ) -> CompressedObservation:
+        """Compress with LLM if available, falling back to synthetic on any failure.
+
+        ``glossary`` (abbreviation→expansion) inline-expands the text the LLM
+        sees and is only used on the LLM path; the synthetic fallback ignores it.
+        """
         if self.client is None:
             return synthetic_compress(raw)
 
-        system, user = build_prompt(raw)
+        system, user = build_prompt(raw, glossary)
         try:
             text = await asyncio.wait_for(
                 self.client.complete(

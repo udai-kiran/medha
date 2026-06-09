@@ -93,7 +93,7 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 	// Internal service-to-service routes (Python → Go callbacks, etc.).
 	r.Route("/internal", func(r chi.Router) {
 		if deps.Observe.Store != nil {
-			InternalAPI{Store: deps.Observe.Store, IndexBus: deps.IndexBus}.RegisterInternal(r)
+			InternalAPI{Store: deps.Observe.Store, IndexBus: deps.IndexBus, AbbreviationExpansion: cfg.AbbreviationExpansionEnabled}.RegisterInternal(r)
 		}
 	})
 
