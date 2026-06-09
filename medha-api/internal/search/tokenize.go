@@ -1,7 +1,8 @@
-// Package search owns the indexes and ranking primitives: BM25 (this file +
-// bm25.go), vector (Task 15), graph (Task 16), and the RRF orchestrator
-// (Task 17). All three single-modality engines satisfy the Engine
-// interface so the hybrid path can call them uniformly.
+// Package search owns the indexes and ranking primitives: PostgreSQL FTS
+// (pgfts.go), vector, graph, and the RRF orchestrator (rrf.go). All three
+// single-modality engines satisfy the Engine interface so the hybrid path
+// can call them uniformly. This file holds the tokenizer used by the graph
+// index for query-term extraction.
 package search
 
 import (
@@ -106,42 +107,4 @@ var stopwords = map[string]struct{}{
 	"was": {}, "were": {}, "be": {}, "been": {}, "being": {},
 	"have": {}, "has": {}, "had": {}, "do": {}, "does": {}, "did": {},
 	"this": {}, "that": {}, "with": {}, "from": {}, "as": {}, "it": {},
-}
-
-// synonyms expands query tokens with simple coding-domain equivalents.
-// Bidirectional pairs are exploded so either side matches the other.
-var synonyms = map[string][]string{
-	"auth":           {"authentication", "authz"},
-	"authentication": {"auth"},
-	"db":             {"database"},
-	"database":       {"db"},
-	"fn":             {"function"},
-	"function":       {"fn"},
-	"api":            {"endpoint"},
-	"endpoint":       {"api"},
-	"jwt":            {"token"},
-}
-
-// ExpandSynonyms returns terms plus their bidirectional synonyms,
-// deduplicated. Used on query terms only — index terms stay as-is.
-func ExpandSynonyms(terms []string) []string {
-	if len(terms) == 0 {
-		return terms
-	}
-	seen := make(map[string]struct{}, len(terms)*2)
-	out := make([]string, 0, len(terms)*2)
-	add := func(s string) {
-		if _, ok := seen[s]; ok {
-			return
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	for _, t := range terms {
-		add(t)
-		for _, s := range synonyms[t] {
-			add(s)
-		}
-	}
-	return out
 }
