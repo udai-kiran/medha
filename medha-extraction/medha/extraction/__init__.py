@@ -9,6 +9,11 @@ can drop them in once the runtime dependencies are pinned.
 """
 
 from medha.extraction.heuristic_extractor import HeuristicExtractor
+from medha.extraction.llm_extractor import (
+    ExtractionOutcome,
+    LLMExtractor,
+    LLMExtractorConfig,
+)
 from medha.extraction.pipeline import (
     ExtractionPipeline,
     ExtractionResult,
@@ -23,11 +28,14 @@ from medha.extraction.relationships import (
 from medha.extraction.types import POLE_O_TYPES, classify_subtype
 
 __all__ = [
+    "ExtractionOutcome",
     "Extractor",
     "ExtractionPipeline",
     "ExtractionResult",
     "HeuristicExtractor",
     "HeuristicRelationshipExtractor",
+    "LLMExtractor",
+    "LLMExtractorConfig",
     "POLE_O_TYPES",
     "classify_subtype",
     "co_occurrence_relationships",

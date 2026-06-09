@@ -31,7 +31,7 @@ from medha.compression import (
 from medha.config import Settings, get_settings
 from medha.embedding import pick_embedder
 from medha.enrichment import Enricher, EnrichmentCache, WikipediaEnricher
-from medha.extraction import default_pipeline, extract_relationships
+from medha.extraction import LLMExtractor, LLMExtractorConfig
 from medha.llm import build_llm_client
 from medha.models import CompressedObservation, Entity, RawObservation, Relationship
 from medha.summarization import ObservationDigest
@@ -61,6 +61,7 @@ async def lifespan(app: FastAPI) -> Any:
     # Build per-stage LLM clients (None → synthetic fallback, no crash).
     compress_client = build_llm_client(settings.resolve_stage_model("compress"), settings)
     summarize_client = build_llm_client(settings.resolve_stage_model("summarize"), settings)
+    extract_client = build_llm_client(settings.resolve_stage_model("extract"), settings)
 
     app.state.compressor = LLMCompressor(
         client=compress_client,
@@ -72,11 +73,16 @@ async def lifespan(app: FastAPI) -> Any:
         settings=settings,
         config=SessionSummarizerConfig(),
     )
+    app.state.extractor = LLMExtractor(
+        client=extract_client,
+        settings=settings,
+        config=LLMExtractorConfig(),
+    )
 
     stage_map = {
         "compress": compress_client.name if compress_client else "synthetic",
         "summarize": summarize_client.name if summarize_client else "synthetic",
-        "extract": settings.resolve_stage_model("extract") or "heuristic",
+        "extract": app.state.extractor.name,
         "embed": (
             f"bifrost:{settings.embedding_fingerprint()}" if settings.embedding_model else "local"
         ),
@@ -100,6 +106,7 @@ async def health() -> dict[str, Any]:
     settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
     compressor: LLMCompressor | None = getattr(app.state, "compressor", None)
     summarizer: SessionSummarizer | None = getattr(app.state, "summarizer", None)
+    extractor: LLMExtractor | None = getattr(app.state, "extractor", None)
     requests_total.labels(route="/health", status="200").inc()
     return {
         "status": "ok",
@@ -107,7 +114,7 @@ async def health() -> dict[str, Any]:
         "stages": {
             "compress": compressor.name if compressor else "synthetic",
             "summarize": summarizer.name if summarizer else "synthetic",
-            "extract": settings.resolve_stage_model("extract") or "heuristic",
+            "extract": extractor.name if extractor else "heuristic",
             "embed": (
                 f"bifrost:{settings.embedding_fingerprint()}"
                 if settings.embedding_model
@@ -177,27 +184,24 @@ class ExtractResponse(BaseModel):
     stages_run: list[str]
 
 
-# Single shared pipeline; default = heuristic only (NFR-9 no-network floor).
-_extraction_pipeline = default_pipeline()
-
-
 @app.post("/extract", response_model=ExtractResponse)
 async def extract(req: ExtractRequest) -> ExtractResponse:
     """Extract typed entities + relationships from text.
 
-    The heuristic pipeline catches file paths, identifiers, URLs, and
-    typical verb-driven relationships. Real spaCy/GLiNER/LLM extractors
-    layer on top via the same interface.
+    The LLM extractor is the primary path — it selects meaningful, named
+    entities rather than scraping every code symbol. The regex heuristic
+    pipeline runs only as the offline / failure fallback (NFR-9 no-network
+    floor), so this endpoint always returns something usable.
     """
-    result = _extraction_pipeline.extract(
+    extractor: LLMExtractor = app.state.extractor
+    outcome = await extractor.extract(
         req.text, source_observation_id=req.source_observation_id
     )
-    relationships = extract_relationships(req.text, source_observation_id=req.source_observation_id)
     requests_total.labels(route="/extract", status="200").inc()
     return ExtractResponse(
-        entities=result.entities,
-        relationships=relationships,
-        stages_run=result.stages_run,
+        entities=outcome.entities,
+        relationships=outcome.relationships,
+        stages_run=outcome.stages_run,
     )
 
 
