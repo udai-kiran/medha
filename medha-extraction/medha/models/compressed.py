@@ -23,5 +23,10 @@ class CompressedObservation(BaseModel):
     importance: int = Field(default=5, ge=0, le=10)
     confidence: float = Field(default=0.3, ge=0.0, le=1.0)
     image_description: str | None = Field(default=None, alias="imageDescription")
+    abbreviations: dict[str, str] = Field(
+        default_factory=dict,
+        description="abbreviation→expansion pairs the LLM detected; merged into "
+        "the project glossary, not persisted on the observation row",
+    )
 
     model_config = {"populate_by_name": True}

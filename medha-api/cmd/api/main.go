@@ -79,11 +79,12 @@ func main() {
 	// external worker can consume it. Start the worker goroutine here so
 	// compression jobs are actually processed.
 	inProcWorker := consolidation.NewWorker(consolidation.WorkerConfig{
-		PythonServiceURL:    cfg.PythonServiceURL,
-		InternalCallbackURL: "http://localhost" + cfg.Addr(),
-		HTTPTimeout:         60 * time.Second,
-		Logger:              logger,
-		Store:               store,
+		PythonServiceURL:      cfg.PythonServiceURL,
+		InternalCallbackURL:   "http://localhost" + cfg.Addr(),
+		HTTPTimeout:           60 * time.Second,
+		Logger:                logger,
+		Store:                 store,
+		AbbreviationExpansion: cfg.AbbreviationExpansionEnabled,
 	})
 	go func() {
 		logger.Info("worker.inproc.start")

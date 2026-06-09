@@ -617,14 +617,25 @@ async def rerank(req: RerankRequest) -> RerankResponse:
     return RerankResponse(results=results)
 
 
+class CompressRequest(RawObservation):
+    """A RawObservation plus the project's known abbreviation glossary.
+
+    ``glossary`` (abbreviation→expansion) is request-only: the Go worker ships
+    the project's learned abbreviations so we can inline-expand the text the LLM
+    sees. It is not part of the persisted observation.
+    """
+
+    glossary: dict[str, str] = Field(default_factory=dict)
+
+
 @app.post("/compress", response_model=CompressedObservation)
-async def compress(raw: RawObservation) -> CompressedObservation:
+async def compress(req: CompressRequest) -> CompressedObservation:
     """Compress a single RawObservation via LLM (or synthetic fallback)."""
     compressor: LLMCompressor = getattr(app.state, "compressor", None) or LLMCompressor(
         client=None,
         settings=app.state.settings if hasattr(app.state, "settings") else get_settings(),
     )
-    result = await compressor.compress(raw)
+    result = await compressor.compress(req, glossary=req.glossary)
     requests_total.labels(route="/compress", status="200").inc()
     return validate_compressed(result)
 

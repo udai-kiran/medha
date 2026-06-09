@@ -53,6 +53,7 @@ const (
 	ScopeDecayLog          Scope = "decay_log"
 	ScopeMigrationsApplied Scope = "migrations_applied"
 	ScopeHealthChecks      Scope = "health_checks"
+	ScopeAbbreviations     Scope = "abbreviations"
 )
 
 // KV is a typed key/value layer over the `kv` PostgreSQL table. Values are stored

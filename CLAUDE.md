@@ -91,12 +91,12 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 
 ### Go service internals (`medha-api/internal/`)
 
-- **`state/`** — PostgreSQL backend. `schema.go` holds forward-only migrations (never edit existing, only append). `kv.go` provides a 34-scope key-value layer on top of the `kv` table. The store is opened once in `cmd/api/main.go` and injected everywhere.
+- **`state/`** — PostgreSQL backend. `schema.go` holds forward-only migrations (never edit existing, only append). `kv.go` provides a 35-scope key-value layer on top of the `kv` table (the `abbreviations` scope backs the per-project abbreviation glossary in `glossary.go`). The store is opened once in `cmd/api/main.go` and injected everywhere.
 - **`models/`** — Shared domain types: `Memory` (with `MemoryType` and `MemoryTier` enums), `SessionSummary`, `RawObservation`. Memory tiers are `working | episodic | semantic | procedural`; types are `architecture | pattern | preference | bug | workflow | fact`.
 - **`api/`** — Chi router wired in `router.go`. All routes live under `/agentmemory` with Bearer auth + rate limiting (120 req/min). The `/internal` sub-router is Python→Go callback only. `RouterDeps` struct injects all collaborators; each feature area registers itself via a typed API struct (e.g. `MemoryAPI`, `SessionAPI`).
 - **`config/`** — Single source of truth for all env vars (`FromEnv()`). Feature flags and decay constants live here alongside connection settings.
 - **`search/`** — Three independent indexes: PostgreSQL FTS (`pgfts.go`: keyword search via `tsvector`/`ts_rank` over a GIN index — replaces the former hand-rolled BM25), vector (cosine similarity via Python `/embed`), graph (entity BFS). `Hybrid` in the same package fuses results using Reciprocal Rank Fusion (k=60), then applies post-fusion multipliers — a provenance boost (`user` 2.0× > `extracted` 1.0× > `episodic` 0.7×) and a recency boost (`1 + SEARCH_RECENCY_WEIGHT·exp(-ageDays·ln2/halfLife)`, from `pgfts_docs.indexed_at`, so recent sessions outrank older ones) — before an optional cross-encoder rerank and a per-session diversity cap of 3.
-- **`consolidation/`** — `Pipeline` runs the SessionEnd DAG: fetch observations → POST `/summarize` to Python → POST `/extract` to Python → distil memories → persist. Best-effort: individual steps fail without aborting the rest. `DecayEngine` applies Ebbinghaus decay (`strength *= rate^daysOld`; hard-evict below threshold) on a nightly scheduler.
+- **`consolidation/`** — `Pipeline` runs the SessionEnd DAG: fetch observations → POST `/summarize` to Python → POST `/extract` to Python → distil memories → persist. Best-effort: individual steps fail without aborting the rest. `DecayEngine` applies Ebbinghaus decay (`strength *= rate^daysOld`; hard-evict below threshold) on a nightly scheduler. The `Worker` compress path also carries the **abbreviation glossary**: it ships the project's known abbreviations to Python `/compress` (which inline-expands the text the LLM sees) and the compression callback merges back any pairs the LLM newly detects (first-write-wins, per-project, capped). Gated by `ABBREVIATION_EXPANSION_ENABLED`; storage lives in `state/glossary.go`.
 - **`dedup/`** — SHA-256 rolling 5-minute window per session to drop duplicate observations.
 - **`privacy/`** — Fail-closed filter applied before any persistence. Strips `<private>…</private>` blocks, redacts API keys/JWTs/key=value secrets, and removes ANSI codes. Sets `HasSecrets` flag on the observation so downstream enrichment is skipped (FR-9).
 - **`mcp/`** — MCP server using `modelcontextprotocol/go-sdk`. `tools.go` registers the core tool surface; `tools_extended.go` adds 27+ tools covering orchestration, team/governance, slots/working, advanced retrieval, entity intelligence, and vision platform. Streamable HTTP transport (spec 2025-06-18). Mounted at `/v1/agentmemory/mcp` in the API and served standalone on port 3114 via `cmd/mcp`.
@@ -127,7 +127,7 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 ### Data flow summary
 
 1. Agent fires `POST /v1/agentmemory/observe` → privacy filter → dedup check → store `RawObservation` → enqueue compression job.
-2. Worker consumes → calls Python `/compress` → Python calls Go `POST /internal/observation/{id}/compressed` → FTS + vector indexed.
+2. Worker consumes → calls Python `/compress` (sending the project's abbreviation glossary so known abbreviations are inline-expanded for the LLM) → Python calls Go `POST /internal/observation/{id}/compressed` (returning any newly-detected abbreviations, merged into the project glossary) → FTS + vector indexed.
 3. Agent fires `SessionEnd` hook → consolidation pipeline → `SessionSummary` + `Memory` rows created.
 4. Nightly decay job evicts memories whose strength drops below `DECAY_EVICTION_THRESHOLD`.
 
@@ -167,6 +167,7 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 | `SEARCH_RECENCY_WEIGHT` | `0.3` | Post-RRF recency boost; surfaces recent sessions above older ones. `0` disables (pure relevance) |
 | `SEARCH_RECENCY_HALFLIFE_DAYS` | `7` | Age (days) at which the recency bonus halves |
 | `CONSOLIDATION_ENABLED` | `true` | Toggle session-end pipeline |
+| `ABBREVIATION_EXPANSION_ENABLED` | `true` | Per-project abbreviation glossary: ship known abbreviations to `/compress` for inline expansion and learn new ones from the LLM. `false` disables both the send and the merge |
 | `PYTHON_SERVICE_URL` | `http://localhost:5000` | Go→Python calls |
 | `BIFROST_URL` | **(required)** | Bifrost endpoint, e.g. `http://192.168.2.91:8080`; service won't start without it |
 | `BIFROST_API_KEY` | (empty) | Optional; Bifrost may not require auth |

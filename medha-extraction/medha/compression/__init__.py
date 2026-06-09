@@ -9,6 +9,7 @@ from medha.compression.llm_compressor import (
     LLMCompressor,
     LLMCompressorConfig,
     build_prompt,
+    expand_abbreviations,
     parse_response,
 )
 from medha.compression.synthetic_compressor import SyntheticCompressor, synthetic_compress
@@ -20,6 +21,7 @@ __all__ = [
     "LLMCompressorConfig",
     "SyntheticCompressor",
     "build_prompt",
+    "expand_abbreviations",
     "parse_response",
     "synthetic_compress",
     "validate_compressed",

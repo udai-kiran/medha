@@ -28,6 +28,9 @@ type WorkerConfig struct {
 	Logger *slog.Logger
 	// Store is used to fetch raw observations before sending them to Python.
 	Store *state.Store
+	// AbbreviationExpansion, when true, makes the worker fetch the project's
+	// abbreviation glossary and ship it to Python /compress for inline expansion.
+	AbbreviationExpansion bool
 }
 
 // Worker processes jobs pulled from a Queue. The compress path:
@@ -83,6 +86,11 @@ type compressRequest struct {
 	ToolOutput string         `json:"toolOutput,omitempty"`
 	RawText    string         `json:"rawText"`
 	Timestamp  string         `json:"timestamp"`
+	// Project lets Python scope any per-project behaviour (currently the
+	// abbreviation glossary). Glossary maps abbreviation → expansion; Python
+	// inline-expands the observation text the LLM sees.
+	Project  string            `json:"project,omitempty"`
+	Glossary map[string]string `json:"glossary,omitempty"`
 }
 
 func (w *Worker) handleCompress(ctx context.Context, j Job) error {
@@ -119,6 +127,18 @@ func (w *Worker) handleCompress(ctx context.Context, j Job) error {
 		ToolOutput: obs.ToolOutput,
 		RawText:    rawText,
 		Timestamp:  obs.CreatedAt.UTC().Format(time.RFC3339),
+		Project:    obs.Project,
+	}
+
+	// Ship the project's known abbreviations so Python can inline-expand the
+	// text the LLM sees. Best-effort: a glossary read failure must not block
+	// compression.
+	if w.cfg.AbbreviationExpansion {
+		if g, gerr := w.cfg.Store.GetGlossary(ctx, obs.Project); gerr != nil {
+			log.Warn("worker.compress.glossary_failed", "err", gerr)
+		} else if len(g) > 0 {
+			req.Glossary = g
+		}
 	}
 
 	compressed, err := w.callPythonCompress(ctx, req)
