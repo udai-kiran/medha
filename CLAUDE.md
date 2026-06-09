@@ -117,7 +117,7 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 ### Python service internals (`medha-extraction/medha/`)
 
 - `api.py` — FastAPI app exposing `/extract`, `/compress`, `/summarize`, `/embed`, `/enrich`, `/health`.
-- `extraction/` — Heuristic entity extractor with optional LLM fallback (`pipeline.py`).
+- `extraction/` — LLM entity + relationship extractor is the primary path (`llm_extractor.py`, gated on `EXTRACT_MODEL`/`LLM_MODEL`); it selects meaningful named entities instead of scraping every code symbol. The regex `HeuristicExtractor` (`pipeline.py`) runs only as the offline / failure fallback so `/extract` is never network-dependent (NFR-9). On the LLM path entities/relationships are LLM-only — heuristic output is not merged back in.
 - `compression/` — `LLMCompressor` (XML-structured output) with `synthetic_compressor.py` fallback.
 - `summarization/` — `SessionSummarizer` (LLM or synthetic fallback).
 - `llm/` — Bifrost client factory. `build_llm_client()` returns an `OpenAICompatibleClient` pointed at `BIFROST_URL/v1`, or `None` (→ synthetic fallback) when `BIFROST_URL` is unset.
@@ -140,7 +140,7 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 | ADR-0003 | Neo4j is optional; service degrades gracefully when disabled |
 | ADR-0004 | All REST routes under `/v1/agentmemory/` base path |
 | ADR-0005 | MCP tool surface: small, tested set delegating to REST logic |
-| ADR-0006 | Extraction defaults to heuristic (no heavy NLP dependency) |
+| ADR-0006 | Extraction is LLM-first when a model is configured; the regex heuristic is the no-network fallback (no heavy local NLP dependency) |
 
 ## Key env vars
 
