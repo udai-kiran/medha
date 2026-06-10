@@ -18,11 +18,23 @@ func TestFromEnv_Defaults(t *testing.T) {
 	if c.QueueBackend != "memory" {
 		t.Errorf("QueueBackend = %q, want memory", c.QueueBackend)
 	}
+	if c.EmbeddingRequestTimeoutSec != 5 {
+		t.Errorf("EmbeddingRequestTimeoutSec = %d, want 5", c.EmbeddingRequestTimeoutSec)
+	}
+	if c.HybridVectorTimeoutSec != 2 {
+		t.Errorf("HybridVectorTimeoutSec = %d, want 2", c.HybridVectorTimeoutSec)
+	}
 	if c.DecayRatePerDay != 0.95 {
 		t.Errorf("DecayRatePerDay = %v, want 0.95", c.DecayRatePerDay)
 	}
 	if c.Neo4jEnabled {
 		t.Error("Neo4jEnabled should default to false")
+	}
+	if c.DedupeCosineSimilarityThreshold != 0 {
+		t.Errorf("DedupeCosineSimilarityThreshold = %v, want 0 (disabled)", c.DedupeCosineSimilarityThreshold)
+	}
+	if c.DedupeCosineSimilarityWindowSec != 300 {
+		t.Errorf("DedupeCosineSimilarityWindowSec = %d, want 300", c.DedupeCosineSimilarityWindowSec)
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("defaults should validate: %v", err)

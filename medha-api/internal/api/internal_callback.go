@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -35,6 +36,14 @@ func (NoOpIndexBus) IndexMemory(ctx context.Context, id, project, text, provenan
 	return nil
 }
 
+// CosineDedupChecker is satisfied by *search.VectorIndex. When non-nil,
+// PostCompressed compares the incoming observation against recently-indexed
+// observations in the same session and skips indexing if a near-duplicate is
+// found (cosine sim ≥ CosineThr).
+type CosineDedupChecker interface {
+	MaxSessionSimilarity(ctx context.Context, sessionID, text string, window time.Duration) (float64, error)
+}
+
 // InternalAPI groups handlers under /internal — service-to-service callbacks
 // the Python worker uses to report compression / extraction results.
 type InternalAPI struct {
@@ -43,6 +52,13 @@ type InternalAPI struct {
 	// AbbreviationExpansion, when true, merges any abbreviations the LLM
 	// detected during compression into the project's glossary.
 	AbbreviationExpansion bool
+
+	// CosineDeduper, when non-nil, enables async cosine-similarity dedup before
+	// vector indexing. Near-duplicates (sim ≥ CosineThr within CosineWindow) are
+	// stored as compressed rows but not added to any search index.
+	CosineDeduper CosineDedupChecker
+	CosineThr     float64
+	CosineWindow  time.Duration
 }
 
 // RegisterPublic mounts the /agentmemory/* projections of internal endpoints
@@ -116,7 +132,21 @@ func (a InternalAPI) PostCompressed(w http.ResponseWriter, r *http.Request) {
 		if err == nil && row != nil {
 			if a.IndexBus != nil {
 				text := buildIndexText(row, cb)
-				_ = a.IndexBus.IndexObservation(r.Context(), id, row.Project, text)
+				// Cosine dedup: skip indexing when this observation is semantically
+				// too close to a recently-indexed one in the same session.
+				skip := false
+				if a.CosineDeduper != nil && a.CosineThr > 0 {
+					win := a.CosineWindow
+					if win <= 0 {
+						win = 5 * time.Minute
+					}
+					if sim, serr := a.CosineDeduper.MaxSessionSimilarity(r.Context(), row.SessionID, text, win); serr == nil && sim >= a.CosineThr {
+						skip = true
+					}
+				}
+				if !skip {
+					_ = a.IndexBus.IndexObservation(r.Context(), id, row.Project, text)
+				}
 			}
 			if a.AbbreviationExpansion && len(cb.Abbreviations) > 0 {
 				// Best-effort: a glossary write must not fail the callback.

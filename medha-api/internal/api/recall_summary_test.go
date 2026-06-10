@@ -174,3 +174,104 @@ func TestBuildBulletFallback(t *testing.T) {
 		t.Errorf("empty-title entry should be skipped: %q", got)
 	}
 }
+
+func TestFilterRecallResults_DropsRawToolTraces(t *testing.T) {
+	results := []SmartSearchResult{
+		{
+			Type:    "memory",
+			Title:   "Embedding model timing",
+			Snippet: "text-embedding-3-small was faster than gemini-embedding-2 in local benchmarks",
+		},
+		{
+			Type:    "file_edit",
+			Title:   "Edit",
+			Snippet: `Edit | {"file_path":"/tmp/app.go","old_string":"foo","new_string":"bar"}`,
+		},
+		{
+			Type:    "command",
+			Title:   "Bash",
+			Snippet: `{"command":"go test ./internal/search"}`,
+		},
+		{
+			Type:    "file_read",
+			Title:   `Read | {"file_path":"README.md"}`,
+			Snippet: "raw read payload",
+		},
+	}
+
+	got := filterRecallResults(results)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].Title != "Embedding model timing" {
+		t.Fatalf("kept title = %q", got[0].Title)
+	}
+}
+
+func TestFilterRecallResults_KeepsSemanticToolRelatedMemory(t *testing.T) {
+	results := []SmartSearchResult{
+		{
+			Type:    "file_edit",
+			Title:   "Recall hook JSON output",
+			Snippet: "The hook must emit a JSON object on the first line so Claude parses additionalContext.",
+		},
+		{
+			Type:    "command",
+			Title:   "Go test coverage",
+			Snippet: "go test passed for config and search packages after adding vector timeout coverage.",
+		},
+	}
+
+	got := filterRecallResults(results)
+	if len(got) != len(results) {
+		t.Fatalf("len = %d, want %d: %#v", len(got), len(results), got)
+	}
+}
+
+func TestFilterRecallResults_DropsEmptyNotifications(t *testing.T) {
+	results := []SmartSearchResult{
+		{
+			Type:    "notification",
+			Title:   "Notification without content",
+			Snippet: "A notification was received with no input or output content.",
+		},
+		{
+			Type:    "notification",
+			Title:   "Notification received",
+			Snippet: "A notification occurred with no additional details.",
+		},
+		{
+			Type:    "notification",
+			Title:   "Notification received",
+			Snippet: "A notification was received.",
+		},
+		{
+			Type:    "notification",
+			Title:   "Build finished",
+			Snippet: "The test run completed and reported one failing API test.",
+		},
+	}
+
+	got := filterRecallResults(results)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].Title != "Build finished" {
+		t.Fatalf("kept title = %q", got[0].Title)
+	}
+}
+
+func TestFilterRecallResults_DropsUnhydratedHits(t *testing.T) {
+	results := []SmartSearchResult{
+		{ObservationID: "missing", Relevance: 0.04},
+		{Title: "Useful memory", Snippet: "Hydrated observation text", Relevance: 0.03},
+	}
+
+	got := filterRecallResults(results)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].Title != "Useful memory" {
+		t.Fatalf("kept title = %q", got[0].Title)
+	}
+}

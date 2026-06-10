@@ -107,9 +107,10 @@ docker compose up -d
 
 ### Rate limiting
 
-`api.NewRateLimiter(120, time.Minute)` is the default — 120 req/min per
-bearer token (or per IP when auth is off). Override in `main.go` per
-environment.
+Local agent-memory deployments do not enable rate limiting by default. The
+hooks and maintenance jobs can produce short bursts, and those should be
+accepted instead of returned as `429 rate_limited`. `RateLimiter` remains
+available for hosted environments, but `main.go` wires it as `nil` locally.
 
 ## Configuration secrets
 

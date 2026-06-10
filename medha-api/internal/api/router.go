@@ -5,6 +5,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,14 +17,17 @@ import (
 // capture/search side. The zero value gives a usable router (health-only)
 // so the M0 skeleton path still works.
 type RouterDeps struct {
-	Observe       ObserveDeps        // Task 8  — set Store/Deduper/Enqueuer/Broadcaster/SessionEnd
-	Search        SearchDeps         // Task 18 — set Hybrid/Store
-	IndexBus      IndexBus           // Task 13 callback — notifies search indexes when a compression lands
-	MCP           http.Handler       // Task 26 — optional MCP-over-HTTP proxy
-	Metrics       *telemetry.Metrics // Task 29 — Prometheus registry
-	AuthSecret    string             // Task 33 — Bearer token; empty disables auth
-	RateLimiter   *RateLimiter       // Task 33 — nil disables rate limiting
-	PythonBaseURL string             // G29 — for vision embedding proxy
+	Observe       ObserveDeps              // Task 8  — set Store/Deduper/Enqueuer/Broadcaster/SessionEnd
+	Search        SearchDeps               // Task 18 — set Hybrid/Store
+	IndexBus      IndexBus                 // Task 13 callback — notifies search indexes when a compression lands
+	CosineDeduper CosineDedupChecker       // optional async cosine dedup before vector indexing
+	CosineThr     float64                  // similarity threshold; 0 disables
+	CosineWindow  time.Duration            // rolling window for session-scoped comparison
+	MCP           http.Handler             // Task 26 — optional MCP-over-HTTP proxy
+	Metrics       *telemetry.Metrics       // Task 29 — Prometheus registry
+	AuthSecret    string                   // Task 33 — Bearer token; empty disables auth
+	RateLimiter   *RateLimiter             // Task 33 — nil disables rate limiting
+	PythonBaseURL string                   // G29 — for vision embedding proxy
 	HealthProbes  []func() ComponentStatus // optional extra component health probes
 }
 
@@ -48,8 +52,8 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 	// Public, agent-facing routes. Each task's API surface registers itself
 	// here so the router file stays a directory rather than a kitchen sink.
 	r.Route("/v1/agentmemory", func(r chi.Router) {
-		// Auth + rate limiting only on /v1/agentmemory routes — /health and
-		// /metrics stay open so probes don't need credentials.
+		// Auth and optional rate limiting only on /v1/agentmemory routes —
+		// /health and /metrics stay open so probes don't need credentials.
 		r.Use(BearerAuth(deps.AuthSecret))
 		r.Use(deps.RateLimiter.Middleware())
 		if deps.Observe.Store != nil {
@@ -93,7 +97,14 @@ func NewRouter(cfg *config.Config, deps RouterDeps) http.Handler {
 	// Internal service-to-service routes (Python → Go callbacks, etc.).
 	r.Route("/internal", func(r chi.Router) {
 		if deps.Observe.Store != nil {
-			InternalAPI{Store: deps.Observe.Store, IndexBus: deps.IndexBus, AbbreviationExpansion: cfg.AbbreviationExpansionEnabled}.RegisterInternal(r)
+			InternalAPI{
+				Store:                 deps.Observe.Store,
+				IndexBus:              deps.IndexBus,
+				AbbreviationExpansion: cfg.AbbreviationExpansionEnabled,
+				CosineDeduper:         deps.CosineDeduper,
+				CosineThr:             deps.CosineThr,
+				CosineWindow:          deps.CosineWindow,
+			}.RegisterInternal(r)
 		}
 	})
 

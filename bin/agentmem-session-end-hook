@@ -17,10 +17,19 @@
 command -v jq   >/dev/null 2>&1 || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
+_agentmem_done() {
+    printf '{}\n'
+    exit 0
+}
+
+_agentmem_debug() {
+    [ "${AGENTMEMORY_HOOK_DEBUG:-}" = "1" ] && printf '[agentmem-session-end] %s\n' "$*" >&2
+}
+
 INPUT=$(cat)
-printf '%s' "$INPUT" | jq empty 2>/dev/null || exit 0
+printf '%s' "$INPUT" | jq empty 2>/dev/null || _agentmem_done
 SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
-[ -z "$SESSION_ID" ] && exit 0
+[ -z "$SESSION_ID" ] && _agentmem_done
 
 CWD="$(pwd)"
 
@@ -82,5 +91,7 @@ CURL_ARGS=(-s -o /dev/null --max-time 10
 [ -n "${AGENTMEMORY_SECRET:-}" ] && CURL_ARGS+=(-H "Authorization: Bearer $AGENTMEMORY_SECRET")
 CURL_ARGS+=(-d "$PAYLOAD")
 
-curl "${CURL_ARGS[@]}"
-exit 0
+_agentmem_debug "posting session_end observation for session $SESSION_ID"
+
+curl "${CURL_ARGS[@]}" >/dev/null 2>&1 || true
+_agentmem_done

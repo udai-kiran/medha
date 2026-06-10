@@ -60,7 +60,7 @@ curl -s http://localhost:5000/health | jq
 ```
 
 Installed hooks:
-- `UserPromptSubmit` → `agentmem-recall-hook` (injects memories into context)
+- `UserPromptSubmit` → `agentmem-recall-hook` (calls `/recall-summary`; injects LLM-summarized memory as `additionalContext`)
 - `PostToolUse` (Bash|Edit|Write|Read|…) → `agentmem-tool-hook` (observes tool activity)
 - `PostToolUse` (Edit|Write) → `agentmem-md-procedural-hook` (procedural memory extraction)
 - `Notification` → `agentmem-notify-hook`
@@ -93,11 +93,11 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 
 - **`state/`** — PostgreSQL backend. `schema.go` holds forward-only migrations (never edit existing, only append). `kv.go` provides a 35-scope key-value layer on top of the `kv` table (the `abbreviations` scope backs the per-project abbreviation glossary in `glossary.go`). The store is opened once in `cmd/api/main.go` and injected everywhere.
 - **`models/`** — Shared domain types: `Memory` (with `MemoryType` and `MemoryTier` enums), `SessionSummary`, `RawObservation`. Memory tiers are `working | episodic | semantic | procedural`; types are `architecture | pattern | preference | bug | workflow | fact`.
-- **`api/`** — Chi router wired in `router.go`. All routes live under `/agentmemory` with Bearer auth + rate limiting (120 req/min). The `/internal` sub-router is Python→Go callback only. `RouterDeps` struct injects all collaborators; each feature area registers itself via a typed API struct (e.g. `MemoryAPI`, `SessionAPI`).
+- **`api/`** — Chi router wired in `router.go`. All routes live under `/agentmemory` with Bearer auth; local rate limiting is disabled so hooks and maintenance jobs do not drop bursts. The `/internal` sub-router is Python→Go callback only. `RouterDeps` struct injects all collaborators; each feature area registers itself via a typed API struct (e.g. `MemoryAPI`, `SessionAPI`).
 - **`config/`** — Single source of truth for all env vars (`FromEnv()`). Feature flags and decay constants live here alongside connection settings.
-- **`search/`** — Three independent indexes: PostgreSQL FTS (`pgfts.go`: keyword search via `tsvector`/`ts_rank` over a GIN index — replaces the former hand-rolled BM25), vector (cosine similarity via Python `/embed`), graph (entity BFS). `Hybrid` in the same package fuses results using Reciprocal Rank Fusion (k=60), then applies post-fusion multipliers — a provenance boost (`user` 2.0× > `extracted` 1.0× > `episodic` 0.7×) and a recency boost (`1 + SEARCH_RECENCY_WEIGHT·exp(-ageDays·ln2/halfLife)`, from `pgfts_docs.indexed_at`, so recent sessions outrank older ones) — before an optional cross-encoder rerank and a per-session diversity cap of 3.
+- **`search/`** — Three independent indexes: PostgreSQL FTS (`pgfts.go`: keyword search via `tsvector`/`ts_rank` over a GIN index — replaces the former hand-rolled BM25), vector (cosine similarity via Python `/embed`), graph (entity BFS). `Hybrid` in the same package fuses results using Reciprocal Rank Fusion (k=60), then applies post-fusion multipliers — a provenance boost (`user` 2.0× > `extracted` 1.0× > `episodic` 0.7×) and a recency boost (`1 + SEARCH_RECENCY_WEIGHT·exp(-ageDays·ln2/halfLife)`, from `pgfts_docs.indexed_at`, so recent sessions outrank older ones) — before an optional cross-encoder rerank and a per-session diversity cap of 3. The FTS leg optionally uses a `TSQueryExpander` (`TSQUERY_EXPAND_ENABLED=true`) that calls Python `/tsquery` to compile the natural-language query into structured ts_query strings before the FTS search; failures silently degrade to `websearch_to_tsquery`. Cross-encoder reranking (`RERANK_ENABLED=true`) calls Python `/rerank`, which proxies Cohere rerank-4-fast via Bifrost, on the top `RERANK_POOL_SIZE` RRF candidates before the diversity cap.
 - **`consolidation/`** — `Pipeline` runs the SessionEnd DAG: fetch observations → POST `/summarize` to Python → POST `/extract` to Python → distil memories → persist. Best-effort: individual steps fail without aborting the rest. `DecayEngine` applies Ebbinghaus decay (`strength *= rate^daysOld`; hard-evict below threshold) on a nightly scheduler. The `Worker` compress path also carries the **abbreviation glossary**: it ships the project's known abbreviations to Python `/compress` (which inline-expands the text the LLM sees) and the compression callback merges back any pairs the LLM newly detects (first-write-wins, per-project, capped). Gated by `ABBREVIATION_EXPANSION_ENABLED`; storage lives in `state/glossary.go`.
-- **`dedup/`** — SHA-256 rolling 5-minute window per session to drop duplicate observations.
+- **`dedup/`** — SHA-256 rolling 5-minute window per session to drop exact-duplicate observations at ingestion (key = `SHA-256(sessionID‖toolName‖canonicalJSON(toolInput))`). A second, async cosine-similarity dedup layer lives in `api/internal_callback.go` (`PostCompressed`) — it embeds the compressed text and compares against recently-indexed session vectors, skipping indexing when `sim ≥ DEDUP_COSINE_THRESHOLD`.
 - **`privacy/`** — Fail-closed filter applied before any persistence. Strips `<private>…</private>` blocks, redacts API keys/JWTs/key=value secrets, and removes ANSI codes. Sets `HasSecrets` flag on the observation so downstream enrichment is skipped (FR-9).
 - **`mcp/`** — MCP server using `modelcontextprotocol/go-sdk`. `tools.go` registers the core tool surface; `tools_extended.go` adds 27+ tools covering orchestration, team/governance, slots/working, advanced retrieval, entity intelligence, and vision platform. Streamable HTTP transport (spec 2025-06-18). Mounted at `/v1/agentmemory/mcp` in the API and served standalone on port 3114 via `cmd/mcp`.
 - **`graph/`** — Optional Neo4j Bolt driver. The service runs in degraded mode when `NEO4J_ENABLED=false` (ADR-0003).
@@ -116,7 +116,7 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 
 ### Python service internals (`medha-extraction/medha/`)
 
-- `api.py` — FastAPI app exposing `/extract`, `/compress`, `/summarize`, `/embed`, `/enrich`, `/health`.
+- `api.py` — FastAPI app exposing `/extract`, `/compress`, `/summarize`, `/embed`, `/enrich`, `/health`, `/summarize-memories`, `/tsquery`, `/rerank`. `/summarize-memories` takes search results and generates an LLM summary paragraph (used by the `recall-summary` Go handler). `/tsquery` compiles a natural-language query into PostgreSQL ts_query strings for the FTS expansion leg. `/rerank` proxies Cohere rerank-4-fast via Bifrost for cross-encoder reranking.
 - `extraction/` — LLM entity + relationship extractor is the primary path (`llm_extractor.py`, gated on `EXTRACT_MODEL`/`LLM_MODEL`); it selects meaningful named entities instead of scraping every code symbol. The regex `HeuristicExtractor` (`pipeline.py`) runs only as the offline / failure fallback so `/extract` is never network-dependent (NFR-9). On the LLM path entities/relationships are LLM-only — heuristic output is not merged back in.
 - `compression/` — `LLMCompressor` (XML-structured output) with `synthetic_compressor.py` fallback.
 - `summarization/` — `SessionSummarizer` (LLM or synthetic fallback).
@@ -126,10 +126,11 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 
 ### Data flow summary
 
-1. Agent fires `POST /v1/agentmemory/observe` → privacy filter → dedup check → store `RawObservation` → enqueue compression job.
-2. Worker consumes → calls Python `/compress` (sending the project's abbreviation glossary so known abbreviations are inline-expanded for the LLM) → Python calls Go `POST /internal/observation/{id}/compressed` (returning any newly-detected abbreviations, merged into the project glossary) → FTS + vector indexed.
-3. Agent fires `SessionEnd` hook → consolidation pipeline → `SessionSummary` + `Memory` rows created.
-4. Nightly decay job evicts memories whose strength drops below `DECAY_EVICTION_THRESHOLD`.
+1. Agent fires `POST /v1/agentmemory/observe` → privacy filter → dedup check → store `RawObservation` → enqueue compression job. Hook also posts `session_end` observations via this path.
+2. Worker consumes → calls Python `/compress` (sending the project's abbreviation glossary so known abbreviations are inline-expanded for the LLM) → Python calls Go `POST /internal/observation/{id}/compressed` (returning any newly-detected abbreviations, merged into the project glossary) → cosine similarity check against recently-indexed session vectors (if `DEDUP_COSINE_THRESHOLD > 0`): near-duplicates are stored but **not** indexed → FTS + vector indexed.
+3. Recall hook fires on `UserPromptSubmit` → `POST /v1/agentmemory/recall-summary` → hybrid search + Python `/summarize-memories` → LLM summary paragraph injected as `additionalContext`. Results below relevance 0.01 or prompts with fewer than 2 significant tokens are skipped.
+4. Agent fires `SessionEnd` hook → consolidation pipeline → `SessionSummary` + `Memory` rows created.
+5. Nightly decay job evicts memories whose strength drops below `DECAY_EVICTION_THRESHOLD`.
 
 ### Key ADRs
 
@@ -166,6 +167,13 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 | `LESSON_DECAY_ENABLED` | `true` | Toggle nightly decay scheduler |
 | `SEARCH_RECENCY_WEIGHT` | `0.3` | Post-RRF recency boost; surfaces recent sessions above older ones. `0` disables (pure relevance) |
 | `SEARCH_RECENCY_HALFLIFE_DAYS` | `7` | Age (days) at which the recency bonus halves |
+| `TSQUERY_EXPAND_ENABLED` | `false` | LLM-compiles FTS queries to structured ts_query via Python `/tsquery`; degrades to `websearch_to_tsquery` on failure |
+| `RERANK_ENABLED` | `false` | Cross-encoder reranking after RRF via Python `/rerank` (Cohere rerank-4-fast via Bifrost) |
+| `RERANK_POOL_SIZE` | `30` | Candidates fed to the reranker (from the top of the RRF list) |
+| `RERANK_TOP_K` | `0` | Reranker output count; 0 uses the request limit |
+| `EMBEDDING_REQUEST_TIMEOUT_SEC` | `5` | Timeout for embedding API calls to the Python sidecar |
+| `HYBRID_VECTOR_TIMEOUT_SEC` | `2` | Per-request timeout for the vector leg inside hybrid search |
+| `AGENTMEMORY_INJECT_CONTEXT` | `false` | When true, SessionAPI embeds context into session responses |
 | `CONSOLIDATION_ENABLED` | `true` | Toggle session-end pipeline |
 | `ABBREVIATION_EXPANSION_ENABLED` | `true` | Per-project abbreviation glossary: ship known abbreviations to `/compress` for inline expansion and learn new ones from the LLM. `false` disables both the send and the merge |
 | `PYTHON_SERVICE_URL` | `http://localhost:5000` | Go→Python calls |
@@ -175,8 +183,12 @@ The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; th
 | `COMPRESS_MODEL` | (empty) | Per-stage override; falls back to `LLM_MODEL` |
 | `SUMMARIZE_MODEL` | (empty) | Per-stage override; falls back to `LLM_MODEL` |
 | `EXTRACT_MODEL` | (empty) | Per-stage override; falls back to `LLM_MODEL` |
+| `RERANK_MODEL` | `cohere/rerank-4-fast` | Rerank model routed via Bifrost (Python-side only) |
 | `EMBEDDING_MODEL` | (empty) | If set, Bifrost is used for embeddings; if unset, local hashing fallback. Changing it means reindex |
+| `DEDUP_COSINE_THRESHOLD` | `0` (disabled) | Cosine similarity threshold for async semantic dedup. Observations scoring ≥ threshold against a recently-indexed observation in the same session are stored but not indexed. Requires a real `EMBEDDING_MODEL`; `0.92` is a good starting value for `text-embedding-3-small` |
+| `DEDUP_COSINE_WINDOW_SEC` | `300` | Rolling window (seconds) for session-scoped cosine dedup comparisons |
 | `LOG_LEVEL` | `info` | Go service log level; `debug` enables verbose tracing |
+| `SHUTDOWN_TIMEOUT_SEC` | `15` | Graceful shutdown timeout for the Go API |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OpenTelemetry collector endpoint |
 | `OTEL_SERVICE_NAME` | `agent-mem-go` | Service name reported to OTEL |
 
@@ -203,7 +215,7 @@ Wrap any text that must never be persisted in `<private>…</private>` tags befo
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | `/observe` returns 401 | `AGENTMEMORY_SECRET` set, no bearer | Add `Authorization: Bearer …` |
-| `/smart-search` returns empty | Compression job hasn't run | Ensure `make worker` (or in-process queue) is running |
+| `/smart-search` or `/recall-summary` returns empty | Compression job hasn't run | Ensure `make worker` (or in-process queue) is running |
 | Vector results empty | Python `/embed` unreachable | `make run-py` |
 | Neo4j down warning | Expected unless Neo4j is running | ADR-0003 — degraded mode is safe |
 | Integration tests skipped | `POSTGRES_TEST_HOST` not set | `POSTGRES_TEST_HOST=localhost go test ./... -race` |

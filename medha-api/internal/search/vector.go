@@ -269,6 +269,61 @@ func (v *VectorIndex) Search(ctx context.Context, project, query string, limit i
 	return hits, nil
 }
 
+// MaxSessionSimilarity embeds text and returns the highest cosine similarity
+// against any observation already indexed for sessionID within window. Used by
+// the async compression path to skip near-duplicate observations before they
+// enter the search indexes. Returns 0 when there are no prior vectors to compare.
+func (v *VectorIndex) MaxSessionSimilarity(ctx context.Context, sessionID, text string, window time.Duration) (float64, error) {
+	if v.embedder == nil {
+		return 0, errors.New("MaxSessionSimilarity: no embedder")
+	}
+	vecs, _, err := v.embedder.Embed(ctx, []string{text})
+	if err != nil {
+		return 0, fmt.Errorf("MaxSessionSimilarity: embed: %w", err)
+	}
+	if len(vecs) == 0 {
+		return 0, nil
+	}
+	candidate := vecs[0]
+
+	since := time.Now().UTC().Add(-window).Format(time.RFC3339Nano)
+	rows, err := v.store.DB.QueryContext(ctx,
+		`SELECT v.doc_id FROM vector_docs v
+		 JOIN observations o ON v.doc_id = o.id
+		 WHERE o.session_id = $1 AND v.indexed_at > $2`,
+		sessionID, since,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var docIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			docIDs = append(docIDs, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	var maxSim float64
+	for _, docID := range docIDs {
+		existing, ok := v.vectors[docID]
+		if !ok {
+			continue
+		}
+		if s := cosine(candidate, existing); !math.IsNaN(s) && s > maxSim {
+			maxSim = s
+		}
+	}
+	return maxSim, nil
+}
+
 // cosine returns the cosine similarity of two equally-dimensioned vectors.
 // Both inputs are expected to be L2-normalised; we still compute the full
 // formula in case a provider doesn't normalise.

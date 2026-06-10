@@ -111,6 +111,31 @@ func (p *PgFTS) IndexedAt(ctx context.Context, ids []string) (map[string]time.Ti
 	return out, rows.Err()
 }
 
+// ProvenanceFor returns provenance labels for indexed documents. IDs absent from
+// the FTS table are omitted. Hybrid search uses this to apply provenance boosts
+// consistently to hits that entered through vector or graph legs.
+func (p *PgFTS) ProvenanceFor(ctx context.Context, ids []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := p.store.DB.QueryContext(ctx,
+		`SELECT doc_id, provenance FROM pgfts_docs WHERE doc_id = ANY($1)`,
+		pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id, provenance string
+		if err := rows.Scan(&id, &provenance); err != nil {
+			return nil, err
+		}
+		out[id] = provenance
+	}
+	return out, rows.Err()
+}
+
 // Delete removes a document from the index.
 func (p *PgFTS) Delete(ctx context.Context, docID string) error {
 	_, err := p.store.DB.ExecContext(ctx, `DELETE FROM pgfts_docs WHERE doc_id = $1`, docID)

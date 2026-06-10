@@ -100,7 +100,10 @@ func main() {
 		logger.Error("search.pgfts", "err", err)
 		os.Exit(1)
 	}
-	vec, err := search.NewVectorIndex(rootCtx, store, &search.PythonEmbedder{BaseURL: cfg.PythonServiceURL})
+	vec, err := search.NewVectorIndex(rootCtx, store, &search.PythonEmbedder{
+		BaseURL: cfg.PythonServiceURL,
+		HTTP:    &http.Client{Timeout: time.Duration(cfg.EmbeddingRequestTimeoutSec) * time.Second},
+	})
 	if err != nil {
 		logger.Error("search.vector", "err", err)
 		os.Exit(1)
@@ -131,6 +134,7 @@ func main() {
 		Reranker:            reranker,
 		RerankPoolSize:      cfg.RerankPoolSize,
 		K:                   60,
+		VectorTimeout:       time.Duration(cfg.HybridVectorTimeoutSec) * time.Second,
 		PerGroupCap:         3,
 		RecencyWeight:       cfg.SearchRecencyWeight,
 		RecencyHalfLifeDays: cfg.SearchRecencyHalfLifeDays,
@@ -224,6 +228,15 @@ func main() {
 		})
 	}
 
+	var cosineDeduper api.CosineDedupChecker
+	if cfg.DedupeCosineSimilarityThreshold > 0 {
+		cosineDeduper = vec
+	}
+	cosineWindow := time.Duration(cfg.DedupeCosineSimilarityWindowSec) * time.Second
+	if cosineWindow <= 0 {
+		cosineWindow = 5 * time.Minute
+	}
+
 	router := api.NewRouter(cfg, api.RouterDeps{
 		Observe: api.ObserveDeps{
 			Store:       store,
@@ -232,13 +245,16 @@ func main() {
 			Broadcaster: viewerHub,
 			SessionEnd:  consolidation.SessionEndHandler{Pipeline: consolPipeline},
 		},
-		Search:       api.SearchDeps{Hybrid: hybrid, Store: store},
-		IndexBus:     indexBus,
-		MCP:          mcpHandler,
-		Metrics:      metrics,
-		AuthSecret:   cfg.AgentMemorySecret,
-		RateLimiter:  api.NewRateLimiter(120, time.Minute), // 120 req/min/client
-		HealthProbes: healthProbes,
+		Search:        api.SearchDeps{Hybrid: hybrid, Store: store},
+		IndexBus:      indexBus,
+		CosineDeduper: cosineDeduper,
+		CosineThr:     cfg.DedupeCosineSimilarityThreshold,
+		CosineWindow:  cosineWindow,
+		MCP:           mcpHandler,
+		Metrics:       metrics,
+		AuthSecret:    cfg.AgentMemorySecret,
+		RateLimiter:   nil, // local agent memory should not reject hook/maintenance bursts
+		HealthProbes:  healthProbes,
 	})
 
 	apiSrv := &http.Server{

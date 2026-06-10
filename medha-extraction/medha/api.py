@@ -13,10 +13,11 @@ register routers under the same app:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Any
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, generate_latest
 from pydantic import BaseModel, Field
@@ -30,6 +31,7 @@ from medha.compression import (
 )
 from medha.config import Settings, get_settings
 from medha.embedding import pick_embedder
+from medha.embedding.openai_embedder import EmbeddingProviderError
 from medha.enrichment import Enricher, EnrichmentCache, WikipediaEnricher
 from medha.extraction import LLMExtractor, LLMExtractorConfig
 from medha.llm import build_llm_client
@@ -100,6 +102,32 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def request_timing(request: Request, call_next: Any) -> Any:
+    """Log wall-clock duration for every Python API request."""
+    start = perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        logger.error(
+            "py.http.request_error",
+            method=request.method,
+            path=request.url.path,
+            duration_ms=round((perf_counter() - start) * 1000, 2),
+            err=str(exc),
+        )
+        raise
+
+    logger.info(
+        "py.http.request",
+        method=request.method,
+        path=request.url.path,
+        status=response.status_code,
+        duration_ms=round((perf_counter() - start) * 1000, 2),
+    )
+    return response
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     """Liveness probe — always returns 200 unless the process is dying."""
@@ -162,7 +190,11 @@ async def embed(req: EmbedRequest) -> EmbedResponse:
     """
     settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
     embedder = pick_embedder(settings)
-    result = await embedder.embed(req.texts)
+    try:
+        result = await embedder.embed(req.texts)
+    except EmbeddingProviderError as exc:
+        requests_total.labels(route="/embed", status="502").inc()
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     requests_total.labels(route="/embed", status="200").inc()
     return EmbedResponse(
         embeddings=result.vectors, provider=result.provider, dimension=result.dimension

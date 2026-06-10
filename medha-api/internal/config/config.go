@@ -39,7 +39,9 @@ type Config struct {
 	RabbitMQURL  string
 
 	// Python sidecar
-	PythonServiceURL string
+	PythonServiceURL           string
+	EmbeddingRequestTimeoutSec int
+	HybridVectorTimeoutSec     int
 
 	// Feature flags
 	AgentMemoryAutoCompress  bool
@@ -75,6 +77,14 @@ type Config struct {
 	SearchRecencyWeight       float64 // boost magnitude; 0 disables. Multiplier = 1 + w·exp(-age/halfLife)
 	SearchRecencyHalfLifeDays float64 // age (days) at which the recency bonus halves
 
+	// Cosine dedup: applied async in the compression worker before vector-indexing.
+	// Near-duplicate observations (cosine sim ≥ threshold within the window) are
+	// skipped. 0 disables. When EMBEDDING_MODEL is unset the embedder uses local
+	// hashing, making cosine comparisons semantically meaningless — leave threshold
+	// at 0 unless a real embedding model is configured via EMBEDDING_MODEL.
+	DedupeCosineSimilarityThreshold float64
+	DedupeCosineSimilarityWindowSec int // seconds; 0 → 300 default
+
 	// Security
 	AgentMemorySecret string
 
@@ -107,6 +117,8 @@ func FromEnv() *Config {
 		QueueBackend:                 getString("QUEUE_BACKEND", "memory"),
 		RabbitMQURL:                  getString("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 		PythonServiceURL:             getString("PYTHON_SERVICE_URL", "http://localhost:5000"),
+		EmbeddingRequestTimeoutSec:   getInt("EMBEDDING_REQUEST_TIMEOUT_SEC", 5),
+		HybridVectorTimeoutSec:       getInt("HYBRID_VECTOR_TIMEOUT_SEC", 2),
 		AgentMemoryAutoCompress:      getBool("AGENTMEMORY_AUTO_COMPRESS", false),
 		AgentMemorySlots:             getBool("AGENTMEMORY_SLOTS", false),
 		AgentMemoryReflect:           getBool("AGENTMEMORY_REFLECT", false),
@@ -124,7 +136,9 @@ func FromEnv() *Config {
 		RerankTopK:                   getInt("RERANK_TOP_K", 0),
 		SearchRecencyWeight:          getFloat("SEARCH_RECENCY_WEIGHT", 0.3),
 		SearchRecencyHalfLifeDays:    getFloat("SEARCH_RECENCY_HALFLIFE_DAYS", 7.0),
-		AgentMemorySecret:            getString("AGENTMEMORY_SECRET", ""),
+		DedupeCosineSimilarityThreshold: getFloat("DEDUP_COSINE_THRESHOLD", 0),
+		DedupeCosineSimilarityWindowSec: getInt("DEDUP_COSINE_WINDOW_SEC", 300),
+		AgentMemorySecret:               getString("AGENTMEMORY_SECRET", ""),
 		OTELExporterEndpoint:         getString("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		OTELServiceName:              getString("OTEL_SERVICE_NAME", "agent-mem-go"),
 		ShutdownTimeout:              time.Duration(getInt("SHUTDOWN_TIMEOUT_SEC", 15)) * time.Second,

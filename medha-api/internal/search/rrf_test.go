@@ -169,3 +169,72 @@ func TestHybrid_SingleModePassthrough(t *testing.T) {
 		t.Errorf("fts passthrough via bm25 mode = %+v", hits)
 	}
 }
+
+type staticEmbedder struct {
+	query  []float32
+	byText map[string][]float32
+}
+
+func (e staticEmbedder) Embed(_ context.Context, texts []string) ([][]float32, int, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		if vec, ok := e.byText[text]; ok {
+			out[i] = vec
+		} else {
+			out[i] = e.query
+		}
+	}
+	return out, len(e.query), nil
+}
+
+func TestHybrid_LoadsProvenanceForVectorAndGraphHits(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	fts, err := NewPgFTS(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const proj = "hybrid-provenance"
+	if err := fts.Index(ctx, "obs-exact", proj, "exactmarker pipeline"); err != nil {
+		t.Fatal(err)
+	}
+	// Indexed but intentionally not an FTS match for the query. It enters through
+	// graph+vector and should still receive the same episodic provenance penalty.
+	if err := fts.Index(ctx, "obs-graph", proj, "unrelated graph document"); err != nil {
+		t.Fatal(err)
+	}
+
+	graph := NewGraphIndex(store)
+	pipeline, err := graph.UpsertEntity(ctx, proj, "pipeline", "OBJECT", "TERM", 0.9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.LinkObservationToEntity(ctx, "obs-graph", pipeline.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	vector := &VectorIndex{
+		embedder: staticEmbedder{query: []float32{1, 0}},
+		dim:      2,
+		vectors: map[string][]float32{
+			"obs-exact": {1, 0},
+			"obs-graph": {0.99, 0.01},
+		},
+		projectOf: map[string]string{
+			"obs-exact": proj,
+			"obs-graph": proj,
+		},
+	}
+
+	hybrid := &Hybrid{FTS: fts, Vector: vector, Graph: graph, K: 60}
+	hits, err := hybrid.Search(ctx, proj, "exactmarker pipeline", ModeHybrid, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) < 2 {
+		t.Fatalf("want at least two hits, got %+v", hits)
+	}
+	if hits[0].ID != "obs-exact" {
+		t.Fatalf("top hit = %q, want obs-exact; hits = %+v", hits[0].ID, hits)
+	}
+}

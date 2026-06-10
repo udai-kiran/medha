@@ -9,22 +9,31 @@
 
 command -v jq >/dev/null 2>&1 || exit 0
 
+_agentmem_done() {
+    printf '{}\n'
+    exit 0
+}
+
+_agentmem_debug() {
+    [ "${AGENTMEMORY_HOOK_DEBUG:-}" = "1" ] && printf '[md-procedural-hook] %s\n' "$*" >&2
+}
+
 INPUT=$(cat)
-printf '%s' "$INPUT" | jq empty 2>/dev/null || exit 0
+printf '%s' "$INPUT" | jq empty 2>/dev/null || _agentmem_done
 
 TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
 case "$TOOL" in
     Write|Edit) ;;
-    *) exit 0 ;;
+    *) _agentmem_done ;;
 esac
 
 FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')
-[ -z "$FILE_PATH" ] && exit 0
+[ -z "$FILE_PATH" ] && _agentmem_done
 
 # Only care about markdown files
 case "$FILE_PATH" in
     *.md|*.MD) ;;
-    *) exit 0 ;;
+    *) _agentmem_done ;;
 esac
 
 # Find the seed script: next to this hook, or in PATH
@@ -33,10 +42,10 @@ SEED_SCRIPT="$SCRIPT_DIR/agentmem-seed-procedural"
 if [ ! -x "$SEED_SCRIPT" ]; then
     SEED_SCRIPT=$(command -v agentmem-seed-procedural 2>/dev/null || true)
 fi
-[ -x "$SEED_SCRIPT" ] || exit 0
+[ -x "$SEED_SCRIPT" ] || _agentmem_done
 
-printf '[md-procedural-hook] scheduling procedural sync for %s\n' "$FILE_PATH" >&2
+_agentmem_debug "scheduling procedural sync for $FILE_PATH"
 
-"$SEED_SCRIPT" "$FILE_PATH" &
+"$SEED_SCRIPT" "$FILE_PATH" >/dev/null 2>&1 &
 disown
-exit 0
+_agentmem_done

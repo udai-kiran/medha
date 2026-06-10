@@ -59,6 +59,7 @@ func main() {
 	}
 	vec, err := search.NewVectorIndex(rootCtx, store, &search.PythonEmbedder{
 		BaseURL: cfg.PythonServiceURL,
+		HTTP:    &http.Client{Timeout: time.Duration(cfg.EmbeddingRequestTimeoutSec) * time.Second},
 	})
 	if err != nil {
 		logger.Error("search.vector", "err", err)
@@ -67,6 +68,7 @@ func main() {
 	graph := search.NewGraphIndex(store)
 	hybrid := &search.Hybrid{
 		FTS: fts, Vector: vec, Graph: graph, K: 60,
+		VectorTimeout:       time.Duration(cfg.HybridVectorTimeoutSec) * time.Second,
 		RecencyWeight:       cfg.SearchRecencyWeight,
 		RecencyHalfLifeDays: cfg.SearchRecencyHalfLifeDays,
 	}

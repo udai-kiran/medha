@@ -80,6 +80,8 @@ type Hybrid struct {
 	PerGroupCap int
 	// K is the RRF k constant.
 	K int
+	// VectorTimeout bounds the vector leg inside hybrid search. 0 means no extra bound.
+	VectorTimeout time.Duration
 	// LookupGroup maps a Hit id to its diversity group. nil disables grouping.
 	LookupGroup func(ctx context.Context, id string) string
 	// RecencyWeight controls the post-RRF recency boost. The fused score of each
@@ -185,8 +187,16 @@ func (h *Hybrid) hybridSearch(ctx context.Context, project, query string, limit 
 		}
 	}
 	if h.Vector != nil {
-		if hs, err := h.Vector.Search(ctx, project, query, stage); err == nil && hs != nil {
+		vectorCtx := ctx
+		var cancel context.CancelFunc
+		if h.VectorTimeout > 0 {
+			vectorCtx, cancel = context.WithTimeout(ctx, h.VectorTimeout)
+		}
+		if hs, err := h.Vector.Search(vectorCtx, project, query, stage); err == nil && hs != nil {
 			lists = append(lists, hs)
+		}
+		if cancel != nil {
+			cancel()
 		}
 	}
 	if h.Graph != nil {
@@ -200,8 +210,24 @@ func (h *Hybrid) hybridSearch(ctx context.Context, project, query string, limit 
 	fused := RRFFuse(h.K, lists...)
 
 	// Apply provenance boost: user memories rise above pipeline extractions which
-	// rise above episodic observations. Re-sort after applying multipliers so the
-	// reranker (if any) starts from a priority-aware order.
+	// rise above episodic observations. Hits may enter through vector or graph
+	// without an FTS hit, so batch-load missing provenance from pgfts_docs before
+	// applying multipliers.
+	if h.FTS != nil && len(fused) > 0 {
+		missing := make([]string, 0, len(fused))
+		for _, hit := range fused {
+			if _, ok := provenanceByID[hit.ID]; !ok {
+				missing = append(missing, hit.ID)
+			}
+		}
+		if len(missing) > 0 {
+			if provenances, err := h.FTS.ProvenanceFor(ctx, missing); err == nil {
+				for id, provenance := range provenances {
+					provenanceByID[id] = provenance
+				}
+			}
+		}
+	}
 	if len(provenanceByID) > 0 {
 		for i := range fused {
 			if p, ok := provenanceByID[fused[i].ID]; ok {

@@ -8,16 +8,51 @@
 command -v jq >/dev/null 2>&1 || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
+_agentmem_done() {
+    printf '{}\n'
+    exit 0
+}
+
+_agentmem_debug() {
+    [ "${AGENTMEMORY_HOOK_DEBUG:-}" = "1" ] && printf '[agentmem-recall] %s\n' "$*" >&2
+}
+
 INPUT=$(cat)
-printf '%s' "$INPUT" | jq empty 2>/dev/null || exit 0
+printf '%s' "$INPUT" | jq empty 2>/dev/null || _agentmem_done
 
 # Works for both UserPromptSubmit (.prompt) and UserPromptExpansion (.expansion).
 QUERY=$(printf '%s' "$INPUT" | jq -r '(.prompt // .expansion // "") | .[0:300]')
-[ -z "$QUERY" ] && exit 0
+[ -z "$QUERY" ] && _agentmem_done
+
+_agentmem_significant_token_count() {
+    printf '%s' "$1" | awk '
+    BEGIN {
+      stop["a"]; stop["an"]; stop["and"]; stop["are"]; stop["can"]; stop["check"]; stop["did"]; stop["do"]; stop["does"];
+      stop["for"]; stop["hello"]; stop["hey"]; stop["hi"]; stop["in"]; stop["is"]; stop["it"]; stop["me"];
+      stop["no"]; stop["now"]; stop["of"]; stop["ok"]; stop["okay"]; stop["on"]; stop["or"]; stop["please"];
+      stop["that"]; stop["the"]; stop["this"]; stop["to"]; stop["was"]; stop["were"]; stop["with"]; stop["yes"]; stop["you"];
+    }
+    {
+      lower=tolower($0);
+      n=split(lower, parts, /[^[:alnum:]_]+/);
+      count=0;
+      for (i=1; i<=n; i++) {
+        tok=parts[i];
+        if (length(tok) >= 2 && !(tok in stop)) count++;
+      }
+      print count;
+    }'
+}
+
+SIGNIFICANT_TOKENS=$(_agentmem_significant_token_count "$QUERY")
+if [ "${SIGNIFICANT_TOKENS:-0}" -lt 2 ]; then
+    _agentmem_debug "query has $SIGNIFICANT_TOKENS significant tokens; skipping"
+    _agentmem_done
+fi
 
 EVENT=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // "UserPromptSubmit"')
 
-printf '[agentmem-recall] query (%s): %s\n' "$EVENT" "$QUERY" >&2
+_agentmem_debug "query ($EVENT): $QUERY"
 
 CWD="$(pwd)"
 
@@ -59,28 +94,26 @@ fi
 
 BODY=$(jq -cn --arg q "$QUERY" --arg p "$PROJECT" '{"query": $q, "project": $p, "limit": 5}')
 
-CURL_ARGS=(-s --max-time 8
+CURL_ARGS=(-s --max-time 20
   -X POST "$AGENTMEMORY_URL/v1/agentmemory/recall-summary"
   -H "Content-Type: application/json")
 [ -n "${AGENTMEMORY_SECRET:-}" ] && CURL_ARGS+=(-H "Authorization: Bearer $AGENTMEMORY_SECRET")
 CURL_ARGS+=(-d "$BODY")
 
-RESPONSE=$(curl "${CURL_ARGS[@]}" 2>/dev/null) || exit 0
+RESPONSE=$(curl "${CURL_ARGS[@]}" 2>/dev/null) || _agentmem_done
 
-# Require at least one result with relevance >= 0.05 to avoid injecting noise.
+# Require at least one result with enough RRF relevance to avoid injecting noise.
 MAX_RELEVANCE=$(printf '%s' "$RESPONSE" | jq -r '[.results[]?.relevance // 0] | max // 0' 2>/dev/null)
-PASSES_THRESHOLD=$(printf '%s' "$MAX_RELEVANCE" | awk '{print ($1 >= 0.05) ? "yes" : "no"}')
+PASSES_THRESHOLD=$(printf '%s' "$MAX_RELEVANCE" | awk '{print ($1 >= 0.01) ? "yes" : "no"}')
 if [ "$PASSES_THRESHOLD" != "yes" ]; then
-    printf '[agentmem-recall] max relevance %.4f below threshold — skipping\n' "$MAX_RELEVANCE" >&2
-    exit 0
+    _agentmem_debug "max relevance $MAX_RELEVANCE below threshold; skipping"
+    _agentmem_done
 fi
 
 SUMMARY=$(printf '%s' "$RESPONSE" | jq -r '.summary // empty' 2>/dev/null)
-[ -z "$SUMMARY" ] && exit 0
+[ -z "$SUMMARY" ] && _agentmem_done
 
-printf '[agentmem-recall] injecting context (%s results, max relevance %.4f)\n' \
-    "$(printf '%s' "$RESPONSE" | jq '.results | length' 2>/dev/null)" \
-    "$MAX_RELEVANCE" >&2
+_agentmem_debug "injecting context ($(printf '%s' "$RESPONSE" | jq '.results | length' 2>/dev/null) results, max relevance $MAX_RELEVANCE)"
 
 CTX="[agent-mem] Relevant context from memory:
 $SUMMARY"
