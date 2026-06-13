@@ -17,28 +17,33 @@ type config struct {
 // loadConfig resolves AGENTMEMORY_URL/SECRET/PROJECT from (in order):
 //  1. Environment variables
 //  2. AGENTMEMORY_ENV_FILE env var
-//  3. .env.mcp walked up from cwd
+//  3. .env.mcp walked up from cwd (each level checked independently)
 //  4. $HOME/.codex/.env.mcp  (Codex-specific global config location)
 //  5. $XDG_CONFIG_HOME/agent-mem/.env.mcp
 //  6. Defaults (URL: http://localhost:3111, Project: git-derived)
+//
+// Each source fills only the keys that are still unset, so a project-local
+// .env.mcp with only AGENTMEMORY_PROJECT does not shadow a global
+// AGENTMEMORY_SECRET from a lower-priority file.
 func loadConfig(cwd string) config {
 	c := config{
 		URL:     os.Getenv("AGENTMEMORY_URL"),
 		Secret:  os.Getenv("AGENTMEMORY_SECRET"),
 		Project: os.Getenv("AGENTMEMORY_PROJECT"),
 	}
-	if c.URL == "" || c.Secret == "" || c.Project == "" {
-		if envFile := findEnvFile(cwd); envFile != "" {
-			pairs := parseEnvFile(envFile)
-			if c.URL == "" {
-				c.URL = pairs["AGENTMEMORY_URL"]
-			}
-			if c.Secret == "" {
-				c.Secret = pairs["AGENTMEMORY_SECRET"]
-			}
-			if c.Project == "" {
-				c.Project = pairs["AGENTMEMORY_PROJECT"]
-			}
+	for _, f := range findEnvFiles(cwd) {
+		if c.URL != "" && c.Secret != "" && c.Project != "" {
+			break
+		}
+		pairs := parseEnvFile(f)
+		if c.URL == "" {
+			c.URL = pairs["AGENTMEMORY_URL"]
+		}
+		if c.Secret == "" {
+			c.Secret = pairs["AGENTMEMORY_SECRET"]
+		}
+		if c.Project == "" {
+			c.Project = pairs["AGENTMEMORY_PROJECT"]
 		}
 	}
 	if c.URL == "" {
@@ -50,16 +55,18 @@ func loadConfig(cwd string) config {
 	return c
 }
 
-func findEnvFile(cwd string) string {
+// findEnvFiles returns all candidate env files in descending priority order.
+// Callers merge values across files, stopping once all keys are satisfied.
+func findEnvFiles(cwd string) []string {
+	var files []string
 	if f := os.Getenv("AGENTMEMORY_ENV_FILE"); f != "" {
-		if _, err := os.Stat(f); err == nil {
-			return f
+		if fileExists(f) {
+			files = append(files, f)
 		}
 	}
-	// Walk up from cwd
 	for d := cwd; ; {
 		if p := filepath.Join(d, ".env.mcp"); fileExists(p) {
-			return p
+			files = append(files, p)
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
@@ -67,24 +74,22 @@ func findEnvFile(cwd string) string {
 		}
 		d = parent
 	}
-	// Codex global config location
 	home := os.Getenv("HOME")
 	if home != "" {
 		if p := filepath.Join(home, ".codex", ".env.mcp"); fileExists(p) {
-			return p
+			files = append(files, p)
 		}
 	}
-	// XDG fallback
 	xdg := os.Getenv("XDG_CONFIG_HOME")
 	if xdg == "" && home != "" {
 		xdg = filepath.Join(home, ".config")
 	}
 	if xdg != "" {
 		if p := filepath.Join(xdg, "agent-mem", ".env.mcp"); fileExists(p) {
-			return p
+			files = append(files, p)
 		}
 	}
-	return ""
+	return files
 }
 
 func parseEnvFile(path string) map[string]string {

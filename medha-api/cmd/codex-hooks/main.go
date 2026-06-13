@@ -1,7 +1,8 @@
 // Command codex-hooks is a single-binary Codex hook dispatcher.
 // It reads JSON from stdin, dispatches on hook_event_name, writes the
-// appropriate output to stdout, then exits. A global WaitGroup drains
-// async observation goroutines before exit (timeout: 3 s; 10 s for Stop).
+// appropriate output to stdout, then exits. Pure-capture events exit
+// immediately without draining async goroutines (fire-and-forget). Events
+// that inject context or must guarantee delivery drain with a short timeout.
 // A top-level recover ensures hooks never block the harness on panic.
 package main
 
@@ -49,8 +50,16 @@ func main() {
 		os.Stdout.Write([]byte("{}\n"))
 	}
 
-	// Drain async observations. Stop gets a longer window so the checkpoint
-	// observation arrives before the process exits.
+	// Pure-capture events exit immediately — there is no injection and the
+	// observation is truly fire-and-forget. Draining here would add up to
+	// observeTimeout latency on every tool call when the service is unreachable.
+	if captureOnly(base.HookEventName) {
+		return
+	}
+
+	// For events that inject context or trigger consolidation (Stop fires
+	// session_end), give goroutines a bounded window to complete.
+	// Stop gets a longer window because it sends two observations.
 	timeout := 3 * time.Second
 	if base.HookEventName == "Stop" {
 		timeout = 10 * time.Second
@@ -61,6 +70,18 @@ func main() {
 	case <-done:
 	case <-time.After(timeout):
 	}
+}
+
+// captureOnly reports whether event only fires async capture and needs no drain.
+// These events return {} immediately; blocking on goroutine completion would add
+// observeClient.Timeout latency on every call when the service is unreachable.
+func captureOnly(event string) bool {
+	switch event {
+	case "PreToolUse", "PostToolUse", "PermissionRequest",
+		"PreCompact", "SubagentStart", "SubagentStop":
+		return true
+	}
+	return false
 }
 
 func dispatch(event string, cfg config, cwd string, raw []byte, base BaseInput) any {
