@@ -324,7 +324,7 @@
 <body>
 
 <h1>agent-mem — Data Flow</h1>
-<p class="subtitle">How Claude Code hooks, the Go API, the Python sidecar, and PostgreSQL work together</p>
+<p class="subtitle">How Claude Code / Codex hooks, the Go API, the Python sidecar, and PostgreSQL work together</p>
 
 <!-- ══════════════════════════════════════════════════════
      MAIN FLOW DIAGRAM (SVG)
@@ -381,7 +381,7 @@
   <!-- Store -->
   <rect x="715" y="8" width="240" height="34" rx="5" fill="#1c1a0e" stroke="#9e6a03" stroke-width="1"/>
   <text x="835" y="30" text-anchor="middle" font-family="monospace" font-size="10" font-weight="700" fill="#e3b341" letter-spacing="1">STORAGE</text>
-  <text x="835" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">PostgreSQL · BM25 · Vector</text>
+  <text x="835" y="42" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">PostgreSQL · FTS · Vector</text>
 
   <!-- ═══════════════════════════════════
        PHASE 1 — INGESTION
@@ -399,6 +399,12 @@
   <rect x="10" y="150" width="160" height="40" rx="5" fill="#111827" stroke="#1f6feb55" stroke-width="1"/>
   <text x="90" y="168" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#79c0ff">notification</text>
   <text x="90" y="182" text-anchor="middle" font-family="monospace" font-size="8" fill="#6e7681">agent events</text>
+
+  <!-- Hook block: codex-hooks (Codex CLI) -->
+  <rect x="10" y="198" width="160" height="52" rx="5" fill="#0d1526" stroke="#388bfd55" stroke-width="1"/>
+  <text x="90" y="214" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#a5d6ff">Codex hooks</text>
+  <text x="90" y="227" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#6e7681">agent-mem-codex-hooks</text>
+  <text x="90" y="239" text-anchor="middle" font-family="monospace" font-size="7" fill="#6e7681">10 events incl. Stop→session_end</text>
 
   <!-- Arrow: hooks → POST /observe -->
   <path d="M 170 115 L 230 115" stroke="#1f6feb" stroke-width="1.5" fill="none" marker-end="url(#arr-blue)"/>
@@ -436,6 +442,12 @@
   <!-- Arrow: store → enqueue -->
   <path d="M 395 152 L 395 175 L 240 175 L 240 195" stroke="#3fb950" stroke-width="1.5" fill="none" stroke-dasharray="4,3" marker-end="url(#arr-green)"/>
   <text x="285" y="170" font-family="monospace" font-size="7.5" fill="#3fb950">enqueue compress job</text>
+
+  <!-- Eager raw-text index: fires immediately after InsertRawObservation.
+       Same IndexBus path; compression callback later upserts with cleaner text. -->
+  <path d="M 940 152 L 940 285" stroke="#3fb950" stroke-width="1.2" fill="none" stroke-dasharray="3,2" marker-end="url(#arr-green)"/>
+  <text x="845" y="216" font-family="monospace" font-size="7" fill="#7ee787">eager raw-text index</text>
+  <text x="850" y="226" font-family="monospace" font-size="7" fill="#7ee787">(async goroutine)</text>
 
   <!-- ═══════════════════════════════════
        PHASE 2 — COMPRESSION (ASYNC)
@@ -479,12 +491,12 @@
 
   <!-- Arrow: internal → index -->
   <path d="M 410 306 L 720 306" stroke="#3fb950" stroke-width="1.5" fill="none" marker-end="url(#arr-green)"/>
-  <text x="430" y="298" font-family="monospace" font-size="7.5" fill="#7ee787">BM25 + vector indexed (via IndexBus)</text>
+  <text x="418" y="298" font-family="monospace" font-size="7.5" fill="#7ee787">FTS + vector upsert (compressed replaces raw)</text>
 
-  <!-- BM25 / Vector store -->
+  <!-- FTS / Vector store -->
   <rect x="720" y="285" width="230" height="52" rx="5" fill="#1f1a0e" stroke="#9e6a03" stroke-width="1"/>
   <text x="835" y="304" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#e3b341">Search Indexes</text>
-  <text x="835" y="317" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">BM25 (keyword) · vector (cosine via /embed)</text>
+  <text x="835" y="317" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">FTS / tsvector+GIN · vector (cosine)</text>
   <text x="835" y="328" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">graph (Neo4j BFS, optional)</text>
 
   <!-- Arrow: Python /embed called by Go for vector -->
@@ -586,13 +598,14 @@
   <text x="264" y="680" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#ffa198">search.Hybrid</text>
   <text x="264" y="693" text-anchor="middle" font-family="monospace" font-size="7.5" fill="#8b949e">RRF fusion (k=60) · diversity cap=3</text>
 
-  <!-- Arrow: BM25 query -->
+  <!-- Arrow: FTS query -->
   <path d="M 264 702 L 264 718 L 380 718 L 380 705" stroke="#f78166" stroke-width="1.2" fill="none" marker-end="url(#arr-red)"/>
 
-  <!-- BM25 -->
+  <!-- FTS (PgFTS) -->
   <rect x="340" y="662" width="82" height="40" rx="5" fill="#1a0e0e" stroke="#f78166" stroke-width="1"/>
-  <text x="381" y="680" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#ffa198">BM25</text>
-  <text x="381" y="693" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">keyword index</text>
+  <text x="381" y="678" text-anchor="middle" font-family="monospace" font-size="9" font-weight="700" fill="#ffa198">FTS</text>
+  <text x="381" y="690" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">tsvector / ts_rank</text>
+  <text x="381" y="700" text-anchor="middle" font-family="monospace" font-size="7" fill="#8b949e">GIN index</text>
 
   <!-- Arrow: vector query (via Python /embed) -->
   <path d="M 448 682 L 460 682" stroke="#388bfd" stroke-width="1.2" fill="none" marker-end="url(#arr-blue)"/>
@@ -690,6 +703,10 @@
     <span>Queue / async flow</span>
   </div>
   <div class="legend-item">
+    <div class="legend-line" style="background:#3fb950; border-top: 2px dashed #3fb950; height:0"></div>
+    <span>Eager raw-text index (immediate)</span>
+  </div>
+  <div class="legend-item">
     <div class="legend-line" style="background:#e3b341"></div>
     <span>DB write</span>
   </div>
@@ -735,7 +752,8 @@
       <li>SHA-256 hash of content checked against a rolling 5-minute window per session</li>
       <li>Duplicate → <span class="warn-hl">dropped silently</span>, dedup counter incremented in Prometheus</li>
       <li>Unique → stored as <code>RawObservation</code> (compressed=0) in PostgreSQL</li>
-      <li>Job enqueued: <code>memory</code> queue (dev) or <span class="ok-hl">RabbitMQ</span> (prod, <code>QUEUE_BACKEND</code>)</li>
+      <li><span class="ok-hl">Eager index (new):</span> raw text immediately indexed into FTS + vector via <code>EagerIndexBus</code> — async goroutine, 10 s timeout. Picks <code>userPrompt</code>, <code>transcript_delta.text</code>, or <code>toolName+output</code>. Skips <code>HasSecrets</code> rows</li>
+      <li>Compress job enqueued: <code>memory</code> queue (dev) or <span class="ok-hl">RabbitMQ</span> (prod, <code>QUEUE_BACKEND</code>)</li>
     </ul>
   </div>
 
@@ -746,7 +764,8 @@
       <li><code>LLMCompressor</code> sends to <span class="py-hl">Bifrost</span> with XML-structured output prompt → returns <code>narrative</code>, <code>concepts[]</code>, <code>files[]</code></li>
       <li>If Bifrost unreachable → <span class="warn-hl">synthetic_compressor</span> extracts first 3 sentences as fallback</li>
       <li>Python POSTs result back to Go <code>POST /internal/observation/{id}/compressed</code></li>
-      <li>Go sets <code>compressed=1</code>, fires <code>IndexBus</code> → BM25 + vector re-index</li>
+      <li>Go sets <code>compressed=1</code>, fires <code>IndexBus</code> → FTS + vector upsert using cleaner compressed text (<span class="ok-hl">replaces the eager raw-text entry</span> via ON CONFLICT DO UPDATE)</li>
+      <li>Optional cosine dedup: if compressed text is too similar to a recently-indexed session observation (sim ≥ <code>DEDUP_COSINE_THRESHOLD</code>), the row is stored but <span class="warn-hl">not indexed</span></li>
     </ul>
   </div>
 
@@ -766,11 +785,23 @@
     <div class="card-title"><div class="dot" style="background:#ffa198"></div>Hybrid Search (Go)</div>
     <ul class="step-list">
       <li><code>POST /smart-search</code> or MCP <code>smart-search</code> tool</li>
-      <li><span class="highlight">BM25</span>: inverted-index keyword search over compressed narratives</li>
+      <li><span class="highlight">FTS (PgFTS)</span>: PostgreSQL tsvector/ts_rank over <code>pgfts_docs</code> with GIN index; provenance-aware (<code>user</code> 2× · <code>extracted</code> 1× · <code>episodic</code> 0.7×); optional LLM-compiled ts_query (<code>TSQUERY_EXPAND_ENABLED</code>)</li>
       <li><span class="highlight">Vector</span>: query text → Python <code>/embed</code> → Bifrost embedding model → cosine similarity</li>
       <li><span class="highlight">Graph</span>: entity BFS via Neo4j (optional, ADR-0003)</li>
-      <li>Results fused with <span class="ok-hl">Reciprocal Rank Fusion</span> k=60, per-session diversity cap=3</li>
-      <li>Returns ranked hits with scores from all active indexes</li>
+      <li>Results fused with <span class="ok-hl">Reciprocal Rank Fusion</span> k=60 + recency boost (<code>SEARCH_RECENCY_WEIGHT</code>) + provenance boost; per-session diversity cap=3</li>
+      <li>Optional cross-encoder rerank via Cohere rerank-4-fast (<code>RERANK_ENABLED</code>) on top-<code>RERANK_POOL_SIZE</code> RRF candidates</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><div class="dot" style="background:#a5d6ff"></div>Codex Hooks (agent-mem-codex-hooks)</div>
+    <ul class="step-list">
+      <li>Separate binary for <span class="py-hl">OpenAI Codex CLI</span>; wired via <code>.codex/hooks.json</code> using <code>bin/install-codex.sh</code></li>
+      <li>10 events: <code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PreToolUse</code>, <code>PostToolUse</code>, <code>PermissionRequest</code>, <code>PreCompact</code>, <code>PostCompact</code>, <code>SubagentStart</code>, <code>SubagentStop</code>, <code>Stop</code></li>
+      <li><strong>Injection</strong>: <code>SessionStart</code> + <code>UserPromptSubmit</code> call <code>recall-summary</code> and return <code>additionalContext</code>; <code>PostCompact</code> uses <code>systemMessage</code> (Codex PostCompact has no <code>hookSpecificOutput</code>)</li>
+      <li><strong>Consolidation</strong>: <code>Stop</code> fires a second <code>session_end</code> capture (guarded by <code>stop_hook_active</code>) to trigger the consolidation pipeline — Codex has no SessionEnd event</li>
+      <li>Pure-capture events (<code>PreToolUse</code>, <code>PostToolUse</code>, etc.) exit immediately without drain to avoid latency when the service is unreachable</li>
+      <li>Config: env vars → <code>AGENTMEMORY_ENV_FILE</code> → <code>.env.mcp</code> walked up from cwd → <code>~/.codex/.env.mcp</code> → XDG</li>
     </ul>
   </div>
 
@@ -778,7 +809,7 @@
     <div class="card-title"><div class="dot" style="background:#7ee787"></div>MCP Server (Go, port 3114)</div>
     <ul class="step-list">
       <li>Streamable HTTP transport, spec 2025-06-18</li>
-      <li>6 tools today: <code>remember</code>, <code>recall</code>, <code>forget</code>, <code>smart-search</code>, <code>session-history</code>, <code>status</code></li>
+      <li>Core tools: <code>remember</code>, <code>recall</code>, <code>forget</code>, <code>smart-search</code>, <code>session-history</code>, <code>status</code> + 27 extended tools (orchestration, team, slots, entities, vision)</li>
       <li>Tool handlers are thin wrappers — call same <code>store</code> + <code>search</code> functions as the REST API</li>
       <li>Also mounted at <code>/agentmemory/mcp</code> on the main API (:3111)</li>
       <li>Standalone MCP binary: <code>cmd/mcp</code></li>
@@ -820,6 +851,10 @@
     <tr><td><code>DECAY_RATE_PER_DAY</code></td><td>0.95</td><td>Ebbinghaus base; lower = faster forgetting</td></tr>
     <tr><td><code>DECAY_EVICTION_THRESHOLD</code></td><td>0.1</td><td>Memories below this strength are hard-deleted nightly</td></tr>
     <tr><td><code>PYTHON_SERVICE_URL</code></td><td>http://localhost:5000</td><td>Go → Python callback URL for compress/extract/summarize/embed</td></tr>
+    <tr><td><code>DEDUP_COSINE_THRESHOLD</code></td><td>0 (off)</td><td>Cosine similarity threshold for async semantic dedup at compression callback; 0.92 is a good start with text-embedding-3-small. Requires real EMBEDDING_MODEL</td></tr>
+    <tr><td><code>TSQUERY_EXPAND_ENABLED</code></td><td>false</td><td>LLM-compiles FTS queries to structured ts_query via Python /tsquery; degrades to websearch_to_tsquery on failure</td></tr>
+    <tr><td><code>RERANK_ENABLED</code></td><td>false</td><td>Cross-encoder reranking after RRF via Cohere rerank-4-fast (Python /rerank via Bifrost)</td></tr>
+    <tr><td><code>SEARCH_RECENCY_WEIGHT</code></td><td>0.3</td><td>Post-RRF recency boost; surfaces recent sessions above older ones. 0 disables</td></tr>
   </tbody>
 </table>
 
