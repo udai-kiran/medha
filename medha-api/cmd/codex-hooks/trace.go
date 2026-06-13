@@ -34,7 +34,7 @@ func withTraceLock(sessionID string, fn func(*TraceState)) {
 	if err != nil {
 		return
 	}
-	defer lf.Close()
+	defer lf.Close() //nolint:errcheck
 	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX); err != nil {
 		return
 	}

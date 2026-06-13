@@ -97,7 +97,7 @@ func parseEnvFile(path string) map[string]string {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	m := make(map[string]string)
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {

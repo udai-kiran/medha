@@ -65,7 +65,7 @@ func postObserve(cfg config, p ObservationPayload) {
 	if err != nil {
 		return
 	}
-	resp.Body.Close()
+	resp.Body.Close() //nolint:errcheck
 }
 
 // recallSummary calls recall-summary synchronously (20 s timeout).
@@ -92,7 +92,7 @@ func recallSummaryWith(client *http.Client, cfg config, query, project string) (
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
 	var rr RecallResponse
 	if err := json.NewDecoder(resp.Body).Decode(&rr); err != nil {

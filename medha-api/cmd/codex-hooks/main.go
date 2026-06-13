@@ -19,20 +19,20 @@ var asyncWG sync.WaitGroup
 func main() {
 	defer func() {
 		if r := recover(); r != nil {
-			os.Stdout.Write([]byte("{}\n"))
+			os.Stdout.Write([]byte("{}\n")) //nolint:errcheck
 			os.Exit(0)
 		}
 	}()
 
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil || len(raw) == 0 {
-		os.Stdout.Write([]byte("{}\n"))
+		os.Stdout.Write([]byte("{}\n")) //nolint:errcheck
 		return
 	}
 
 	var base BaseInput
 	if err := json.Unmarshal(raw, &base); err != nil {
-		os.Stdout.Write([]byte("{}\n"))
+		os.Stdout.Write([]byte("{}\n")) //nolint:errcheck
 		return
 	}
 
@@ -47,7 +47,7 @@ func main() {
 
 	// Write output first so Codex gets it without waiting for drain.
 	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
-		os.Stdout.Write([]byte("{}\n"))
+		os.Stdout.Write([]byte("{}\n")) //nolint:errcheck
 	}
 
 	// Pure-capture events exit immediately — there is no injection and the

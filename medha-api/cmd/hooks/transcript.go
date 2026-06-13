@@ -40,7 +40,7 @@ func ingestTranscriptRange(cfg config, base BaseInput, path string, from, to int
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	if from > 0 {
 		if _, err := f.Seek(from, io.SeekStart); err != nil {
