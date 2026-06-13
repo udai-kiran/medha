@@ -10,7 +10,8 @@ cp .env.example .env
 make setup        # go mod download + uv sync --all-extras
 
 # Build
-make build        # Go binaries → medha-api/bin/ (agent-mem-api, agent-mem-mcp, agent-mem-worker)
+make build        # Go binaries → medha-api/bin/ (agent-mem-api, agent-mem-mcp, agent-mem-worker, agent-mem-hooks)
+make build-hooks  # Build only the hook dispatcher binary (agent-mem-hooks)
 make build-image  # Build Docker image → agent-mem:local
 
 # Test
@@ -59,12 +60,9 @@ curl -s http://localhost:5000/health | jq
 ./bin/install.sh [TARGET_DIR]   # defaults to cwd; idempotent
 ```
 
-Installed hooks:
-- `UserPromptSubmit` → `agentmem-recall-hook` (calls `/recall-summary`; injects LLM-summarized memory as `additionalContext`)
-- `PostToolUse` (Bash|Edit|Write|Read|…) → `agentmem-tool-hook` (observes tool activity)
-- `PostToolUse` (Edit|Write) → `agentmem-md-procedural-hook` (procedural memory extraction)
-- `Notification` → `agentmem-notify-hook`
-- `Stop` → `agentmem-session-end-hook` (triggers consolidation pipeline)
+Hook mode (auto-detected by `install.sh`):
+- **Go dispatcher** (`medha-api/bin/agent-mem-hooks`): single binary wired to all 30 Claude Code hook events. Build with `make build-hooks` first. Handles capture (async, fire-and-forget), injection (`UserPromptSubmit`, `SessionStart`, `PostCompact`), transcript delta ingest at `Stop`/`PreCompact`/`SessionEnd`, and the turn trace model (`/tmp/agentmem-trace-{session_id}`).
+- **Bash fallback** (legacy, 5 events): used only when the Go binary is absent. Covers `UserPromptSubmit` → `agentmem-recall-hook`, `PostToolUse` → `agentmem-tool-hook` + `agentmem-md-procedural-hook`, `Notification` → `agentmem-notify-hook`, `Stop` → `agentmem-session-end-hook`.
 
 ## PostgreSQL (primary datastore)
 
@@ -104,15 +102,16 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 - **`telemetry/`** — Prometheus metrics (counters: observations, dedup hits, privacy redactions, consolidation runs, LLM/embed calls; histograms: search latency). Served at `/metrics`.
 - **`viewer/`** — WebSocket hub at :3113; broadcasts live observations to the dashboard. SSE stream also available at `GET :3113/events`.
 
-### Three Go binaries
+### Four Go binaries
 
 | Binary | Entrypoint | Purpose |
 |--------|-----------|---------|
 | `agent-mem-api` | `cmd/api` | Main API + viewer + in-process worker + MCP mount |
 | `agent-mem-mcp` | `cmd/mcp` | Standalone MCP HTTP server on :3114 |
 | `agent-mem-worker` | `cmd/worker` | Standalone async compression worker (for RabbitMQ mode) |
+| `agent-mem-hooks` | `cmd/hooks` | Claude Code hook dispatcher — wires all 30 hook events; deployed per-project via `bin/install.sh` |
 
-The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; the separate `cmd/worker` binary is only needed for `QUEUE_BACKEND=rabbitmq`.
+The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; the separate `cmd/worker` binary is only needed for `QUEUE_BACKEND=rabbitmq`. The `cmd/hooks` binary is a self-contained process that reads hook JSON from stdin, dispatches async capture goroutines, optionally injects `additionalContext`, then exits — it is never part of the API process.
 
 ### Python service internals (`medha-extraction/medha/`)
 
