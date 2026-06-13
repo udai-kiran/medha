@@ -134,6 +134,11 @@ func handleUserPromptSubmit(cfg config, cwd string, raw []byte, base BaseInput) 
 		s.Turn++
 	})
 
+	// Always capture the prompt — independently of whether recall fires.
+	capture(cfg, "user_prompt", base, cwd, map[string]any{
+		"user_prompt": inp.Prompt,
+	})
+
 	query := inp.Prompt
 	if len([]rune(query)) > 300 {
 		query = string([]rune(query)[:300])
@@ -160,10 +165,17 @@ func handleUserPromptExpansion(cfg config, cwd string, raw []byte, base BaseInpu
 	var inp UserPromptInput
 	json.Unmarshal(raw, &inp) //nolint:errcheck
 
-	query := inp.Expansion
-	if query == "" {
-		query = inp.Prompt
+	// Always capture the expansion text — independently of whether recall fires.
+	text := inp.Expansion
+	if text == "" {
+		text = inp.Prompt
 	}
+	capture(cfg, "user_prompt", base, cwd, map[string]any{
+		"user_prompt": text,
+		"source":      "expansion",
+	})
+
+	query := text
 	if len([]rune(query)) > 300 {
 		query = string([]rune(query)[:300])
 	}

@@ -95,6 +95,11 @@ func handleUserPromptSubmit(cfg config, cwd string, raw []byte, base BaseInput) 
 		s.Turn++
 	})
 
+	// Always capture the prompt — independently of whether recall fires.
+	capture(cfg, "user_prompt", base, cwd, map[string]any{
+		"user_prompt": inp.Prompt,
+	})
+
 	query := inp.Prompt
 	if len([]rune(query)) > 300 {
 		query = string([]rune(query)[:300])
@@ -201,12 +206,13 @@ func handleSubagentStop(cfg config, cwd string, raw []byte, base BaseInput) any 
 
 // ── Stop ──────────────────────────────────────────────────────────────────────
 // Fires at the end of every assistant turn. Codex provides last_assistant_message
-// directly in the event (no transcript parsing needed). Captures the turn summary
-// and increments the turn checkpoint.
+// directly in the event (no transcript parsing needed). Captures the turn summary,
+// then — because Codex has no SessionEnd event — also fires a session_end
+// observation to trigger the server-side consolidation pipeline.
 //
-// Note: Codex has no SessionEnd event; Stop is the closest session boundary.
-// Full consolidation is not triggered here — session-end semantics require
-// external state or future Codex event support.
+// stop_hook_active is true when Stop fired as a consequence of a previous Stop
+// hook returning decision:"block" (re-entrant guard). We skip the session_end
+// trigger in that case to avoid kicking off consolidation mid-chain.
 func handleStop(cfg config, cwd string, raw []byte, base BaseInput) any {
 	var inp StopInput
 	json.Unmarshal(raw, &inp) //nolint:errcheck
@@ -221,6 +227,13 @@ func handleStop(cfg config, cwd string, raw []byte, base BaseInput) any {
 		data["last_assistant_message"] = truncate(msg, 2000)
 	}
 	capture(cfg, "stop", base, cwd, data)
+
+	// Codex has no SessionEnd hook. Trigger consolidation from Stop instead,
+	// skipping only when stop_hook_active (re-entrant call from a block decision).
+	if !inp.StopHookActive {
+		capture(cfg, "session_end", base, cwd, map[string]any{})
+	}
+
 	return empty{}
 }
 
