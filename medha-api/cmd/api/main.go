@@ -239,11 +239,12 @@ func main() {
 
 	router := api.NewRouter(cfg, api.RouterDeps{
 		Observe: api.ObserveDeps{
-			Store:       store,
-			Deduper:     dedup.NewWindow(5 * time.Minute),
-			Enqueuer:    enq,
-			Broadcaster: viewerHub,
-			SessionEnd:  consolidation.SessionEndHandler{Pipeline: consolPipeline},
+			Store:         store,
+			Deduper:       dedup.NewWindow(5 * time.Minute),
+			Enqueuer:      enq,
+			Broadcaster:   viewerHub,
+			SessionEnd:    consolidation.SessionEndHandler{Pipeline: consolPipeline},
+			EagerIndexBus: indexBus,
 		},
 		Search:        api.SearchDeps{Hybrid: hybrid, Store: store},
 		IndexBus:      indexBus,

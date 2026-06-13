@@ -398,10 +398,9 @@ func handlePostCompact(cfg config, cwd string, raw []byte, base BaseInput) any {
 		return empty{}
 	}
 
-	return SpecificOutput{HookSpecificOutput: HookSpecificPayload{
-		HookEventName:     "PostCompact",
-		AdditionalContext: "[agent-mem] Context from compacted conversation:\n" + summary,
-	}}
+	return SystemMessageOutput{
+		SystemMessage: "[agent-mem] Context from compacted conversation:\n" + summary,
+	}
 }
 
 // ── InstructionsLoaded ────────────────────────────────────────────────────────

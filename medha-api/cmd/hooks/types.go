@@ -153,3 +153,9 @@ type BlockingOutput struct {
 	Continue   *bool  `json:"continue,omitempty"`
 	StopReason string `json:"stopReason,omitempty"`
 }
+
+// SystemMessageOutput injects a system message into the conversation. Used for
+// PostCompact because Claude Code does not support hookSpecificOutput on that event.
+type SystemMessageOutput struct {
+	SystemMessage string `json:"systemMessage"`
+}

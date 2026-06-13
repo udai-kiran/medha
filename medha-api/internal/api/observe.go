@@ -72,6 +72,11 @@ type ObserveDeps struct {
 	Enqueuer        CompressionEnqueuer
 	Broadcaster     ViewerBroadcaster
 	SessionEnd      SessionEndHandler
+	// EagerIndexBus, when non-nil, indexes the raw observation text immediately
+	// on ingest so recent observations are searchable before the async
+	// compression pipeline runs. The compressed-text callback later upserts
+	// the same doc ID with cleaner text, replacing the raw entry.
+	EagerIndexBus   IndexBus
 	MaxImageBytes   int           // 0 → 4 MiB default
 	HandlerDeadline time.Duration // 0 → no extra deadline applied
 }
@@ -194,6 +199,21 @@ func ObserveHandler(deps ObserveDeps) http.HandlerFunc {
 			log.Warn("observe.enqueue_compress_failed", "err", err)
 		}
 
+		// Eager raw-text indexing: index now so the observation is searchable
+		// immediately, without waiting for the compression pipeline. The
+		// compression callback will upsert the same doc ID with cleaner text.
+		// Skip observations that had secrets — enrichment is disabled for those.
+		if deps.EagerIndexBus != nil && !row.HasSecrets {
+			if text := buildRawIndexText(row); text != "" {
+				eib := deps.EagerIndexBus
+				go func() {
+					bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					_ = eib.IndexObservation(bgCtx, obsID, project, text)
+				}()
+			}
+		}
+
 		writeJSON(w, http.StatusCreated, ObserveResponse{
 			ObservationID: obsID,
 			Compressing:   true,
@@ -278,5 +298,42 @@ func newObservationID() string {
 	var b [10]byte
 	_, _ = rand.Read(b[:])
 	return "obs-" + hex.EncodeToString(b[:])
+}
+
+// buildRawIndexText returns the highest-signal text for eager indexing of a
+// raw (pre-compression) observation. Returns "" for hook types with no
+// meaningful text (session_end, pre_compact, etc.) so the caller can skip.
+func buildRawIndexText(row *state.ObservationRow) string {
+	if row.UserPrompt != "" {
+		return row.UserPrompt
+	}
+	// transcript_delta: the assistant reply text lives in data.text
+	if row.HookType == "transcript_delta" {
+		var d struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal([]byte(row.RawJSON), &d)
+		return d.Text
+	}
+	// Tool observations: name + output (most useful), falling back to input.
+	if row.ToolName == "" {
+		return ""
+	}
+	const maxRunes = 800
+	if row.ToolOutput != "" {
+		out := row.ToolOutput
+		if r := []rune(out); len(r) > maxRunes {
+			out = string(r[:maxRunes])
+		}
+		return row.ToolName + " " + out
+	}
+	if len(row.ToolInputJSON) > 2 {
+		in := string(row.ToolInputJSON)
+		if r := []rune(in); len(r) > maxRunes {
+			in = string(r[:maxRunes])
+		}
+		return row.ToolName + " " + in
+	}
+	return row.ToolName
 }
 
