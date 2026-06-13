@@ -18,26 +18,83 @@ import (
 type HookType string
 
 const (
+	// Original 8 hook types (kept for backward compatibility).
 	HookSessionStart    HookType = "session_start"
 	HookSessionEnd      HookType = "session_end"
 	HookUserPrompt      HookType = "user_prompt"
 	HookPreToolUse      HookType = "pre_tool_use"
 	HookPostToolUse     HookType = "post_tool_use"
-	HookPostToolFailure HookType = "post_tool_failure"
-	HookSubagentEnd     HookType = "subagent_end"
+	HookPostToolFailure HookType = "post_tool_failure" // legacy alias
+	HookSubagentEnd     HookType = "subagent_end"      // legacy alias
 	HookNotification    HookType = "notification"
+
+	// Extended hook types covering all 30 Claude Code hook events.
+	HookPostToolUseFailure HookType = "post_tool_use_failure"
+	HookPostToolBatch      HookType = "post_tool_batch"
+	HookPermissionRequest  HookType = "permission_request"
+	HookPermissionDenied   HookType = "permission_denied"
+	HookSubagentStart      HookType = "subagent_start"
+	HookSubagentStop       HookType = "subagent_stop"
+	HookStopFailure        HookType = "stop_failure"
+	HookSessionEndEvent    HookType = "session_end_event"
+	HookPreCompact         HookType = "pre_compact"
+	HookPostCompact        HookType = "post_compact"
+	HookInstructionsLoaded HookType = "instructions_loaded"
+	HookConfigChange       HookType = "config_change"
+	HookCwdChanged         HookType = "cwd_changed"
+	HookFileChanged        HookType = "file_changed"
+	HookWorktreeCreate     HookType = "worktree_create"
+	HookWorktreeRemove     HookType = "worktree_remove"
+	HookElicitation        HookType = "elicitation"
+	HookElicitationResult  HookType = "elicitation_result"
+	HookTeammateIdle       HookType = "teammate_idle"
+	HookTaskCreated        HookType = "task_created"
+	HookTaskCompleted      HookType = "task_completed"
+	HookMessageDisplay     HookType = "message_display"
+	HookSetup              HookType = "setup"
+	HookUnknown            HookType = "unknown"
+
+	// Synthetic hook types used internally by the dispatcher.
+	HookStop            HookType = "stop"            // per-turn incremental checkpoint
+	HookTranscriptDelta HookType = "transcript_delta" // assistant text from transcript ingest
 )
 
 // validHookTypes lets us reject unknown enum values at parse time.
 var validHookTypes = map[HookType]struct{}{
-	HookSessionStart:    {},
-	HookSessionEnd:      {},
-	HookUserPrompt:      {},
-	HookPreToolUse:      {},
-	HookPostToolUse:     {},
-	HookPostToolFailure: {},
-	HookSubagentEnd:     {},
-	HookNotification:    {},
+	HookSessionStart:       {},
+	HookSessionEnd:         {},
+	HookUserPrompt:         {},
+	HookPreToolUse:         {},
+	HookPostToolUse:        {},
+	HookPostToolFailure:    {},
+	HookSubagentEnd:        {},
+	HookNotification:       {},
+	HookPostToolUseFailure: {},
+	HookPostToolBatch:      {},
+	HookPermissionRequest:  {},
+	HookPermissionDenied:   {},
+	HookSubagentStart:      {},
+	HookSubagentStop:       {},
+	HookStopFailure:        {},
+	HookSessionEndEvent:    {},
+	HookPreCompact:         {},
+	HookPostCompact:        {},
+	HookInstructionsLoaded: {},
+	HookConfigChange:       {},
+	HookCwdChanged:         {},
+	HookFileChanged:        {},
+	HookWorktreeCreate:     {},
+	HookWorktreeRemove:     {},
+	HookElicitation:        {},
+	HookElicitationResult:  {},
+	HookTeammateIdle:       {},
+	HookTaskCreated:        {},
+	HookTaskCompleted:      {},
+	HookMessageDisplay:     {},
+	HookSetup:              {},
+	HookUnknown:            {},
+	HookStop:               {},
+	HookTranscriptDelta:    {},
 }
 
 // IsValid reports whether h is a known hook type.

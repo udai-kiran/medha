@@ -8,6 +8,7 @@ import (
 func TestFromEnv_Defaults(t *testing.T) {
 	t.Setenv("PORT", "")
 	t.Setenv("SQLITE_PATH", "")
+	t.Setenv("NEO4J_ENABLED", "")
 	c := FromEnv()
 	if c.Port != 3111 {
 		t.Errorf("Port = %d, want 3111", c.Port)

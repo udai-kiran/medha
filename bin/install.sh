@@ -10,10 +10,19 @@
 #
 # TARGET_DIR defaults to the current working directory.
 # Idempotent — safe to re-run to update an existing install.
+#
+# Hook mode selection (automatic):
+#   Go dispatcher  — uses medha-api/bin/agent-mem-hooks if built.
+#                    Wires all 30 Claude Code hook events to a single binary.
+#   Bash fallback  — uses the legacy bash scripts when the Go binary is absent.
+#                    Wires only the 5 events covered by the bash scripts.
+#
+# Build the Go dispatcher first:  make build-hooks   (or: make build)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TARGET="${1:-$(pwd)}"
 TARGET="$(cd "$TARGET" && pwd)"
@@ -39,10 +48,22 @@ die()  { printf '\033[0;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v jq >/dev/null 2>&1 || die "jq is required but not found"
 
+# ── detect Go dispatcher ────────────────────────────────────────────────────
+GO_HOOKS_BIN="$REPO_ROOT/medha-api/bin/agent-mem-hooks"
+USE_GO_HOOKS=false
+if [ -x "$GO_HOOKS_BIN" ]; then
+    USE_GO_HOOKS=true
+    info "Go dispatcher found — wiring all 30 hook events"
+else
+    warn "Go dispatcher not found at medha-api/bin/agent-mem-hooks"
+    warn "Run 'make build-hooks' to build it. Falling back to bash hooks (5 events)."
+fi
+
 # ── 1. copy hook binaries ───────────────────────────────────────────────────
 info "Copying hooks → $HOOKS_DST"
 mkdir -p "$HOOKS_DST"
 
+# Always copy the bash hooks (available as standalone tools / fallback).
 for hook in agentmem-tool-hook agentmem-session-end-hook agentmem-notify-hook \
             agentmem-recall-hook agentmem-md-procedural-hook agentmem-seed-procedural; do
     src="$HOOKS_SRC/$hook"
@@ -51,6 +72,13 @@ for hook in agentmem-tool-hook agentmem-session-end-hook agentmem-notify-hook \
     [ "$src" -ef "$dst" ] || cp "$src" "$dst"
     chmod +x "$dst"
 done
+
+# Copy Go dispatcher if built.
+if [ "$USE_GO_HOOKS" = true ]; then
+    dst="$HOOKS_DST/agentmem-hooks"
+    [ "$GO_HOOKS_BIN" -ef "$dst" ] || cp "$GO_HOOKS_BIN" "$dst"
+    chmod +x "$dst"
+fi
 ok "Hooks copied"
 
 # ── 2. copy slash commands ──────────────────────────────────────────────────
@@ -75,90 +103,144 @@ NOTIFY_HOOK="$HOOKS_DST/agentmem-notify-hook"
 END_HOOK="$HOOKS_DST/agentmem-session-end-hook"
 RECALL_HOOK="$HOOKS_DST/agentmem-recall-hook"
 MD_HOOK="$HOOKS_DST/agentmem-md-procedural-hook"
+GO_HOOK="$HOOKS_DST/agentmem-hooks"
 
 # Legacy script names that install.sh used to deploy — removed, keep settings clean.
 LEGACY_HOOKS=("recall-memories.sh" "observe-tool.sh" "notify.sh" "session-end.sh")
 
-if [ -f "$SETTINGS" ]; then
-    # Strip legacy hook entries then add/idempotently merge current hooks.
-    MERGED=$(jq \
-      --arg tool   "$TOOL_HOOK"   \
-      --arg notify "$NOTIFY_HOOK" \
-      --arg end    "$END_HOOK"    \
-      --arg recall "$RECALL_HOOK" \
-      --arg md     "$MD_HOOK"     \
-      --argjson legacy '["recall-memories.sh","observe-tool.sh","notify.sh","session-end.sh"]' \
-      '
-      def is_legacy: . as $cmd | $legacy | any(.[]; $cmd | endswith(.));
+# All 30 Claude Code hook event names handled by the Go dispatcher.
+ALL_EVENTS='[
+  "PreToolUse","PostToolUse","PostToolUseFailure","PostToolBatch",
+  "PermissionRequest","PermissionDenied","Notification",
+  "UserPromptSubmit","UserPromptExpansion",
+  "SessionStart","Stop","StopFailure","SubagentStart","SubagentStop",
+  "PreCompact","PostCompact","SessionEnd",
+  "InstructionsLoaded","ConfigChange","CwdChanged","FileChanged",
+  "WorktreeCreate","WorktreeRemove",
+  "Elicitation","ElicitationResult",
+  "TeammateIdle","TaskCreated","TaskCompleted",
+  "MessageDisplay","Setup"
+]'
 
-      def strip_legacy: [
-        .[] |
-        .hooks = [.hooks[] | select((.command // "") | is_legacy | not)] |
-        select(.hooks | length > 0)
-      ];
+if [ "$USE_GO_HOOKS" = true ]; then
+    # ── Go dispatcher path: one binary wired to all 30 events ────────────────
+    if [ -f "$SETTINGS" ]; then
+        MERGED=$(jq \
+          --arg hooks "$GO_HOOK" \
+          --argjson events "$ALL_EVENTS" \
+          --argjson legacy '["recall-memories.sh","observe-tool.sh","notify.sh","session-end.sh"]' \
+          '
+          def is_legacy: . as $cmd | $legacy | any(.[]; $cmd | endswith(.));
 
-      def add_hook(event; entry; cmd):
-        if .hooks[event] == null then
-          .hooks[event] = [entry]
-        elif ([.hooks[event][].hooks[]?.command] | index(cmd)) != null then
-          .
-        else
-          .hooks[event] += [entry]
-        end;
+          def strip_legacy: [
+            .[] |
+            .hooks = [.hooks[] | select((.command // "") | is_legacy | not)] |
+            select(.hooks | length > 0)
+          ];
 
-      .hooks //= {} |
-      .hooks |= with_entries(.value = (.value | strip_legacy)) |
-      add_hook("UserPromptSubmit";
-        { hooks: [{ type: "command", command: $recall }] };
-        $recall) |
-      add_hook("UserPromptExpansion";
-        { hooks: [{ type: "command", command: $recall }] };
-        $recall) |
-      add_hook("PostToolUse";
-        { matcher: "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
-          hooks: [{ type: "command", command: $tool }] };
-        $tool) |
-      add_hook("PostToolUse";
-        { matcher: "Edit|Write",
-          hooks: [{ type: "command", command: $md }] };
-        $md) |
-      add_hook("Notification";
-        { hooks: [{ type: "command", command: $notify }] };
-        $notify) |
-      add_hook("Stop";
-        { hooks: [{ type: "command", command: $end }] };
-        $end)
-      ' "$SETTINGS")
-    printf '%s\n' "$MERGED" > "$SETTINGS"
+          .hooks //= {} |
+          .hooks |= with_entries(.value = (.value | strip_legacy)) |
+          reduce $events[] as $event (
+            .;
+            if .hooks[$event] == null then
+              .hooks[$event] = [{ hooks: [{ type: "command", command: $hooks }] }]
+            elif ([.hooks[$event][].hooks[]?.command] | index($hooks)) != null then
+              .
+            else
+              .hooks[$event] += [{ hooks: [{ type: "command", command: $hooks }] }]
+            end
+          )
+          ' "$SETTINGS")
+        printf '%s\n' "$MERGED" > "$SETTINGS"
+    else
+        jq -n \
+          --arg hooks "$GO_HOOK" \
+          --argjson events "$ALL_EVENTS" \
+          '{ hooks: (reduce $events[] as $event ({}; .[$event] = [{ hooks: [{ type: "command", command: $hooks }] }])) }' \
+          > "$SETTINGS"
+    fi
 else
-    jq -n \
-      --arg tool   "$TOOL_HOOK"   \
-      --arg notify "$NOTIFY_HOOK" \
-      --arg end    "$END_HOOK"    \
-      --arg recall "$RECALL_HOOK" \
-      --arg md     "$MD_HOOK"     \
-      '{
-        hooks: {
-          UserPromptSubmit: [
-            { hooks: [{ type: "command", command: $recall }] }
-          ],
-          UserPromptExpansion: [
-            { hooks: [{ type: "command", command: $recall }] }
-          ],
-          PostToolUse: [
+    # ── Bash fallback path: 5 events, original bash hooks ────────────────────
+    if [ -f "$SETTINGS" ]; then
+        MERGED=$(jq \
+          --arg tool   "$TOOL_HOOK"   \
+          --arg notify "$NOTIFY_HOOK" \
+          --arg end    "$END_HOOK"    \
+          --arg recall "$RECALL_HOOK" \
+          --arg md     "$MD_HOOK"     \
+          --argjson legacy '["recall-memories.sh","observe-tool.sh","notify.sh","session-end.sh"]' \
+          '
+          def is_legacy: . as $cmd | $legacy | any(.[]; $cmd | endswith(.));
+
+          def strip_legacy: [
+            .[] |
+            .hooks = [.hooks[] | select((.command // "") | is_legacy | not)] |
+            select(.hooks | length > 0)
+          ];
+
+          def add_hook(event; entry; cmd):
+            if .hooks[event] == null then
+              .hooks[event] = [entry]
+            elif ([.hooks[event][].hooks[]?.command] | index(cmd)) != null then
+              .
+            else
+              .hooks[event] += [entry]
+            end;
+
+          .hooks //= {} |
+          .hooks |= with_entries(.value = (.value | strip_legacy)) |
+          add_hook("UserPromptSubmit";
+            { hooks: [{ type: "command", command: $recall }] };
+            $recall) |
+          add_hook("UserPromptExpansion";
+            { hooks: [{ type: "command", command: $recall }] };
+            $recall) |
+          add_hook("PostToolUse";
             { matcher: "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
-              hooks: [{ type: "command", command: $tool }] },
+              hooks: [{ type: "command", command: $tool }] };
+            $tool) |
+          add_hook("PostToolUse";
             { matcher: "Edit|Write",
-              hooks: [{ type: "command", command: $md }] }
-          ],
-          Notification: [
-            { hooks: [{ type: "command", command: $notify }] }
-          ],
-          Stop: [
-            { hooks: [{ type: "command", command: $end }] }
-          ]
-        }
-      }' > "$SETTINGS"
+              hooks: [{ type: "command", command: $md }] };
+            $md) |
+          add_hook("Notification";
+            { hooks: [{ type: "command", command: $notify }] };
+            $notify) |
+          add_hook("Stop";
+            { hooks: [{ type: "command", command: $end }] };
+            $end)
+          ' "$SETTINGS")
+        printf '%s\n' "$MERGED" > "$SETTINGS"
+    else
+        jq -n \
+          --arg tool   "$TOOL_HOOK"   \
+          --arg notify "$NOTIFY_HOOK" \
+          --arg end    "$END_HOOK"    \
+          --arg recall "$RECALL_HOOK" \
+          --arg md     "$MD_HOOK"     \
+          '{
+            hooks: {
+              UserPromptSubmit: [
+                { hooks: [{ type: "command", command: $recall }] }
+              ],
+              UserPromptExpansion: [
+                { hooks: [{ type: "command", command: $recall }] }
+              ],
+              PostToolUse: [
+                { matcher: "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
+                  hooks: [{ type: "command", command: $tool }] },
+                { matcher: "Edit|Write",
+                  hooks: [{ type: "command", command: $md }] }
+              ],
+              Notification: [
+                { hooks: [{ type: "command", command: $notify }] }
+              ],
+              Stop: [
+                { hooks: [{ type: "command", command: $end }] }
+              ]
+            }
+          }' > "$SETTINGS"
+    fi
 fi
 
 # Remove legacy script files from the hooks directory.
