@@ -5,27 +5,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-recall-hook"
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|Edit|Write|Read|WebSearch|WebFetch|Agent",
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-tool-hook"
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-md-procedural-hook"
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
           }
         ]
       }
@@ -35,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-notify-hook"
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
           }
         ]
       }
@@ -45,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-session-end-hook"
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
           }
         ]
       }
@@ -55,7 +45,257 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-recall-hook"
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
+          }
+        ]
+      }
+    ],
+    "Setup": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/udai/work/my-agent-memory/.claude/hooks/agentmem-hooks"
           }
         ]
       }

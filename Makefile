@@ -1,7 +1,7 @@
 # medha — top-level Makefile
 # Wraps Go + Python build/test/lint and Docker Compose bring-up.
 
-.PHONY: help setup build build-image run run-pull test lint run-go run-py worker compose-up compose-down compose-light clean
+.PHONY: help setup build build-image run run-pull test lint run-go run-py worker compose-up compose-down compose-light clean build-hooks build-codex-hooks
 
 GO_DIR := medha-api
 PY_DIR := medha-extraction
@@ -9,7 +9,7 @@ PY_DIR := medha-extraction
 help:
 	@echo "medha make targets:"
 	@echo "  setup        Install Go modules and sync Python deps (via uv)"
-	@echo "  build        Build Go binaries (api, mcp, worker)"
+	@echo "  build        Build Go binaries (api, mcp, worker, hooks, codex-hooks)"
 	@echo "  build-image  Build consolidated Docker image -> agent-mem:local"
 	@echo "  run          Start agent-mem services: Go API :3111, Python :5000, MCP :3114"
 	@echo "  test         Run Go + Python tests"
@@ -29,7 +29,15 @@ setup:
 build:
 	cd $(GO_DIR) && go build -o bin/agent-mem-api ./cmd/api
 	cd $(GO_DIR) && go build -o bin/agent-mem-mcp ./cmd/mcp
+	cd $(GO_DIR) && go build -o bin/agent-mem-hooks ./cmd/hooks
+	cd $(GO_DIR) && go build -o bin/agent-mem-codex-hooks ./cmd/codex-hooks
 	@if [ -d "$(GO_DIR)/cmd/worker" ]; then cd $(GO_DIR) && go build -o bin/agent-mem-worker ./cmd/worker; fi
+
+build-hooks:
+	cd $(GO_DIR) && go build -o bin/agent-mem-hooks ./cmd/hooks
+
+build-codex-hooks:
+	cd $(GO_DIR) && go build -o bin/agent-mem-codex-hooks ./cmd/codex-hooks
 
 ## Build the consolidated Docker image locally and tag it as agent-mem:local.
 build-image:

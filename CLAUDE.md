@@ -10,8 +10,9 @@ cp .env.example .env
 make setup        # go mod download + uv sync --all-extras
 
 # Build
-make build        # Go binaries → medha-api/bin/ (agent-mem-api, agent-mem-mcp, agent-mem-worker, agent-mem-hooks)
-make build-hooks  # Build only the hook dispatcher binary (agent-mem-hooks)
+make build              # Go binaries → medha-api/bin/ (agent-mem-api, agent-mem-mcp, agent-mem-worker, agent-mem-hooks, agent-mem-codex-hooks)
+make build-hooks        # Build only the Claude Code hook dispatcher (agent-mem-hooks)
+make build-codex-hooks  # Build only the Codex hook dispatcher (agent-mem-codex-hooks)
 make build-image  # Build Docker image → agent-mem:local
 
 # Test
@@ -64,6 +65,23 @@ Hook mode (auto-detected by `install.sh`):
 - **Go dispatcher** (`medha-api/bin/agent-mem-hooks`): single binary wired to all 30 Claude Code hook events. Build with `make build-hooks` first. Handles capture (async, fire-and-forget), injection (`UserPromptSubmit`, `SessionStart`, `PostCompact`), transcript delta ingest at `Stop`/`PreCompact`/`SessionEnd`, and the turn trace model (`/tmp/agentmem-trace-{session_id}`).
 - **Bash fallback** (legacy, 5 events): used only when the Go binary is absent. Covers `UserPromptSubmit` → `agentmem-recall-hook`, `PostToolUse` → `agentmem-tool-hook` + `agentmem-md-procedural-hook`, `Notification` → `agentmem-notify-hook`, `Stop` → `agentmem-session-end-hook`.
 
+## Deploying hooks into a Codex project
+
+`bin/install-codex.sh` writes `.codex/hooks.json` for any project using the OpenAI Codex CLI. Requires `jq`.
+
+```bash
+make build-codex-hooks          # build medha-api/bin/agent-mem-codex-hooks first
+./bin/install-codex.sh [TARGET_DIR]   # defaults to cwd; idempotent
+```
+
+Then trust the hooks inside Codex: open `/hooks` and mark the `agent-mem-codex-hooks` entries as trusted (project-local hooks require explicit trust before Codex runs them).
+
+Codex dispatcher (`medha-api/bin/agent-mem-codex-hooks`, `cmd/codex-hooks`):
+- Handles all 10 Codex hook events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`, `Stop`
+- Injects memory context via `additionalContext` at `SessionStart` and `UserPromptSubmit`; uses `systemMessage` at `PostCompact` (Codex PostCompact does not support `hookSpecificOutput`)
+- Captures `last_assistant_message` from the `Stop` event directly (no transcript parsing needed — Codex provides it in the event payload)
+- Config discovery: env vars → `AGENTMEMORY_ENV_FILE` → `.env.mcp` walked up from cwd → `~/.codex/.env.mcp` → XDG config → defaults
+
 ## PostgreSQL (primary datastore)
 
 The Go service requires PostgreSQL. Schema migrations run automatically on startup via forward-only migrations in `medha-api/internal/state/schema.go`.
@@ -102,7 +120,7 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 - **`telemetry/`** — Prometheus metrics (counters: observations, dedup hits, privacy redactions, consolidation runs, LLM/embed calls; histograms: search latency). Served at `/metrics`.
 - **`viewer/`** — WebSocket hub at :3113; broadcasts live observations to the dashboard. SSE stream also available at `GET :3113/events`.
 
-### Four Go binaries
+### Five Go binaries
 
 | Binary | Entrypoint | Purpose |
 |--------|-----------|---------|
@@ -110,8 +128,9 @@ The Go service handles all hot-path operations; Python is called async (via in-m
 | `agent-mem-mcp` | `cmd/mcp` | Standalone MCP HTTP server on :3114 |
 | `agent-mem-worker` | `cmd/worker` | Standalone async compression worker (for RabbitMQ mode) |
 | `agent-mem-hooks` | `cmd/hooks` | Claude Code hook dispatcher — wires all 30 hook events; deployed per-project via `bin/install.sh` |
+| `agent-mem-codex-hooks` | `cmd/codex-hooks` | Codex hook dispatcher — wires all 10 Codex hook events; deployed per-project via `bin/install-codex.sh` |
 
-The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; the separate `cmd/worker` binary is only needed for `QUEUE_BACKEND=rabbitmq`. The `cmd/hooks` binary is a self-contained process that reads hook JSON from stdin, dispatches async capture goroutines, optionally injects `additionalContext`, then exits — it is never part of the API process.
+The `cmd/api` binary embeds an in-process worker when `QUEUE_BACKEND=memory`; the separate `cmd/worker` binary is only needed for `QUEUE_BACKEND=rabbitmq`. Both hook dispatcher binaries (`cmd/hooks`, `cmd/codex-hooks`) are self-contained processes that read hook JSON from stdin, dispatch async capture goroutines, optionally inject context, then exit — they are never part of the API process.
 
 ### Python service internals (`medha-extraction/medha/`)
 
