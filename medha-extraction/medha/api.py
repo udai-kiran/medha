@@ -322,28 +322,36 @@ async def enrich(req: EnrichRequest) -> EnrichResponse:
     return EnrichResponse(fields=res.fields, source=res.source, cached=res.cached)
 
 
-_EXTRACT_MEMORY_SYSTEM_PROMPT = """You extract structure from a user's natural \
-language memory note for a software engineering agent.
+_EXTRACT_MEMORY_SYSTEM_PROMPT = """You structure a user's natural language memory \
+note into searchable fields for a software engineering agent's long-term memory system.
 
-Given the raw note, produce:
-- type: one of architecture|pattern|preference|bug|workflow|fact
-- normalized_content: restate the note as a clear, complete sentence or two
-- concepts: 3-5 lowercase technical terms or proper nouns (tool names, language features, patterns)
-- facts: any specific concrete assertions (can be empty)
+TYPE — pick the single best match:
+  architecture  : design decisions, component boundaries, technology stack choices
+  pattern       : recurring code or design patterns adopted or observed
+  preference    : explicit coding style, tool, or process preferences
+  bug           : defects, root causes, and their fixes
+  workflow      : process steps, command sequences, development flows
+  fact          : any concrete piece of information that doesn't fit above
+  Disambiguation: "Always use PostgreSQL for new services" → architecture (stack choice).
+  "I prefer snake_case" → preference. "Run lint before push" → workflow.
 
-Type guidance:
-- architecture: design decisions, component structure, technology choices
-- pattern: recurring code or design patterns observed
-- preference: user/team coding style or tool preferences
-- bug: identified defects and their root causes
-- workflow: process steps, commands, development flows
-- fact: any other concrete piece of information
+NORMALIZED_CONTENT — restate the note as one or two complete, self-contained sentences
+  that would make sense recalled without the original context. Preserve the user's intent
+  exactly; add specificity where the note is ambiguous. Do not pad or invent details.
+
+CONCEPTS — 3-5 lowercase searchable technical terms: library names, tool names,
+  language features, design patterns, error types, protocol names.
+  NOT generic words (use, code, note, project, file, memory). Use canonical names.
+
+FACTS — atomic assertions extracted from the note, each meaningful on its own.
+  Distinct from normalized_content: normalized_content is the full restatement;
+  facts are the individual extractable claims within it. May be empty.
 
 Return JSON only. Example:
 {"type":"architecture",\
 "normalized_content":"JWT validation uses the jose library in src/auth.ts middleware.",\
 "concepts":["jwt","jose","middleware","authentication"],\
-"facts":["jose library handles token validation"]}"""
+"facts":["jose library handles JWT validation","validation logic lives in src/auth.ts"]}"""
 
 
 class ExtractMemoryRequest(BaseModel):
@@ -414,12 +422,22 @@ async def extract_memory_nlq(req: ExtractMemoryRequest) -> ExtractedMemory:
     return ExtractedMemory(type="fact", normalized_content=req.content, concepts=concepts)
 
 
-_RECALL_SUMMARY_SYSTEM_PROMPT = """You are an AI coding assistant's memory system.
+_RECALL_SUMMARY_SYSTEM_PROMPT = """You synthesize recalled memory snippets into \
+context that an AI coding agent will read immediately before responding to the user's query.
+Write for the agent, not the user — be dense with actionable facts, not conversational.
 
-Summarize the recalled memory snippets below into a concise 2-4 sentence context paragraph.
-Focus on facts, decisions, and patterns that are directly relevant to the current query.
-Be specific — mention file names, tool names, and concrete decisions when present.
-Do not repeat the query back. Do not use bullet points. Plain prose only."""
+Structure your response as 2-4 sentences in this order:
+  1. The most directly relevant fact, decision, or pattern (highest-relevance memory first).
+  2. Supporting context: related decisions, affected files, tools involved.
+  3. Open issues or caveats if any memory flags incomplete work or known problems.
+  4. (Optional) A contradiction or update if two memories conflict — flag it explicitly.
+
+Rules:
+- Plain prose only. No bullet points, no headers, no markdown.
+- Do not restate the query. Do not address the user.
+- Prefer specific over general: file paths, library names, error types over vague references.
+- Memories with higher relevance scores carry more weight; deprioritize low-relevance items.
+- If no recalled memory is relevant to the query, return an empty string."""
 
 
 class RecallMemoryItem(BaseModel):
@@ -455,10 +473,12 @@ async def summarize_memories(req: SummarizeMemoriesRequest) -> SummarizeMemories
     settings: Settings = app.state.settings if hasattr(app.state, "settings") else get_settings()
     client = build_llm_client(settings.resolve_stage_model("summarize"), settings)
 
-    # Build user message listing the memories.
+    # Build user message listing the memories, including relevance score so the
+    # LLM can weight higher-relevance items without inferring rank from position.
     mem_lines = []
     for i, m in enumerate(req.memories, 1):
-        line = f"{i}. [{m.type or 'memory'}] {m.title}"
+        rel = f" [relevance {m.relevance:.2f}]" if m.relevance > 0 else ""
+        line = f"{i}.{rel} [{m.type or 'memory'}] {m.title}"
         if m.snippet:
             line += f" — {m.snippet}"
         mem_lines.append(line)
@@ -488,29 +508,32 @@ async def summarize_memories(req: SummarizeMemoriesRequest) -> SummarizeMemories
     return SummarizeMemoriesResponse(summary=bullets)
 
 
-_TSQUERY_SYSTEM_PROMPT = """You are a query compiler for PostgreSQL ts_query fulltext search.
+_TSQUERY_SYSTEM_PROMPT = """You compile natural language queries into PostgreSQL \
+ts_query strings for fulltext search over software agent memory.
 
-Your task: Generate 2-3 focused ts_query strings that are SELF-CONTAINED and MEANINGFUL.
+Rules:
+1. Generate 2-3 ts_query strings. Each must be meaningful on its own — never emit a
+   single generic term like "code" or "file" without context.
+2. Phrase syntax: use <-> for exact adjacent words: "(connection <-> pool)"
+3. Keep each query to 2-3 terms. Use & to AND terms, | for synonyms, () to group.
+4. Lowercase everything EXCEPT: preserve technical proper nouns as-is when ts_query
+   would stem them incorrectly (e.g. "redis", "postgres", "jwt", "oauth").
+5. For single-word technical queries, generate synonyms and related failure modes:
+   Input: "redis"  →  {"queries": ["redis", "redis & (cache | timeout | eviction)"]}
+6. Never repeat the same logical query twice in different forms.
 
-CRITICAL RULES:
-1. EACH QUERY MUST BE MEANINGFUL ON ITS OWN — never create generic queries without context
-2. MULTI-WORD PHRASE SYNTAX: Use <-> for exact phrases: "(word1 <-> word2)"
-3. KEEP QUERIES SIMPLE: 2-3 terms per query maximum
-4. Use & to combine terms, | for synonyms, parentheses to group
-5. LOWERCASE EVERYTHING
-
-EXAMPLES:
+Examples:
 Input: "JWT authentication token validation"
-Output: {"queries": ["jwt & authentication", "token & validation"]}
+Output: {"queries": ["jwt & authentication", "token & (validation | expiry)"]}
 
 Input: "rate limiting middleware configuration"
 Output: {"queries": ["(rate <-> limiting) | ratelimit", "middleware & configuration"]}
 
 Input: "database connection pool exhaustion debugging"
-Output: {"queries": ["(connection <-> pool) | pool", "pool & (exhaustion | timeout | leak)"]}
+Output: {"queries": ["(connection <-> pool)", "pool & (exhaustion | timeout | leak)"]}
 
 Input: "React state management context API"
-Output: {"queries": ["react & (state <-> management)", "context & api"]}
+Output: {"queries": ["react & (state <-> management)", "react & (context | hook)"]}
 
 Return a JSON object with a "queries" array. No markdown, no explanation."""
 
@@ -693,13 +716,20 @@ async def generate_title(req: TitleRequest) -> TitleResponse:
     if client is not None:
         try:
             prompt = (
-                "Generate a short, descriptive title (5–8 words) for the following memory. "
-                "Return only the title text, no punctuation at the end, no quotes.\n\n"
+                "Generate a title for the following software engineering memory.\n"
+                "Use verb-object form, 4-7 words, present tense.\n"
+                "Good: 'Use jose for JWT validation'  'Postgres connection pool tuning'  "
+                "'Prefer snake_case in Python modules'\n"
+                "Bad: 'Memory about authentication'  'Notes on the database'  'Session'\n"
+                "Return only the title text. No punctuation at the end. No quotes.\n\n"
                 f"{req.content[:800]}"
             )
             import asyncio
             response = await asyncio.wait_for(
-                client.complete(system="You are a concise title generator.", user=prompt),
+                client.complete(
+                    system="You generate concise verb-object titles for software engineering memory entries.",
+                    user=prompt,
+                ),
                 timeout=15.0,
             )
             title = response.strip().strip('"').strip("'")
