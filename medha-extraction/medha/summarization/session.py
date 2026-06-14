@@ -131,14 +131,36 @@ def synthetic_session_summary(
 # --- LLM path -----------------------------------------------------------------
 
 
-_SYSTEM_PROMPT = (
-    "You summarise an agent coding session into structured JSON for long-term memory.\n"
-    "Highlight the goal, the key decisions made, and the files modified.\n"
-    "Only include substantive decisions — choices about tools, libraries, "
-    "approaches, or architecture.\n"
-    "If no decisions were made, leave decisions as an empty array. Never write placeholder text.\n"
-    "Respond ONLY with a JSON object. No prose, no markdown fences."
-)
+_SYSTEM_PROMPT = """\
+You summarise a software agent's coding session into structured JSON for long-term memory.
+A future agent will query this to recall what was attempted, what was decided, and what
+changed — write for retrieval, not for a human reader.
+
+TITLE — a present-tense gerund phrase naming the primary activity, max 100 chars.
+  Good: "Implementing JWT auth in Express middleware"
+        "Debugging Postgres connection pool exhaustion"
+        "Refactoring the payment service to use Stripe SDK v3"
+  Bad:  "Session"  "Coding session"  "Various tasks"  "Working on the project"
+
+NARRATIVE — exactly 2-3 sentences in this order:
+  1. What the session set out to do (the goal or trigger).
+  2. What was accomplished or discovered (concrete outcomes, not "worked on X").
+  3. What remains open or was deferred — omit this sentence if the task completed cleanly.
+  Name the key files, libraries, error types, or commands involved. Be specific.
+
+DECISIONS — concrete choices that constrain or shape future work. Include:
+  library/tool selections, architectural patterns adopted, bug-fix strategies chosen,
+  API contracts agreed, schemas changed, approaches explicitly rejected (and why).
+  Each entry must be self-contained: "Chose jose over jsonwebtoken because it supports
+  ES256 natively" not "chose a JWT library". Leave empty if no substantive choices were made.
+
+FILES — only paths that appear verbatim in the observation data. Never infer or reconstruct.
+
+CONCEPTS — searchable technical terms that index this session: library names, tool names,
+  error types, protocols, design patterns, domain concepts. NOT generic nouns (file, code,
+  function, session, output). Max 10, ordered by relevance.
+
+Respond ONLY with a JSON object. No prose, no markdown fences."""
 
 _USER_TEMPLATE = """\
 <observations>
@@ -147,11 +169,11 @@ _USER_TEMPLATE = """\
 
 Produce a JSON object with exactly these keys:
 {{
-  "title": "short session title",
-  "narrative": "2-3 sentence overview",
-  "decisions": ["decision1", ...],
-  "files": ["path/to/file", ...],
-  "concepts": ["concept", ...]
+  "title": "present-tense gerund phrase, max 100 chars",
+  "narrative": "2-3 sentences: goal / outcome / open work",
+  "decisions": ["self-contained choice that shapes future work", ...],
+  "files": ["verbatim/path/from/observations", ...],
+  "concepts": ["searchable technical term", ...]
 }}"""
 
 
@@ -161,6 +183,7 @@ def _build_user_prompt(digests: list[ObservationDigest]) -> str:
         lines.append(
             f'  {{"title": {json.dumps(d.title)}, '
             f'"narrative": {json.dumps(clip(d.narrative, 200))}, '
+            f'"facts": {json.dumps(d.facts[:4])}, '
             f'"files": {json.dumps(d.files[:5])}}}'
         )
     return _USER_TEMPLATE.format(obs_block="\n".join(lines))
