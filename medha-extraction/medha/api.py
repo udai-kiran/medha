@@ -727,7 +727,10 @@ async def generate_title(req: TitleRequest) -> TitleResponse:
             import asyncio
             response = await asyncio.wait_for(
                 client.complete(
-                    system="You generate concise verb-object titles for software engineering memory entries.",
+                    system=(
+                        "You generate concise verb-object titles"
+                        " for software engineering memory entries."
+                    ),
                     user=prompt,
                 ),
                 timeout=15.0,
