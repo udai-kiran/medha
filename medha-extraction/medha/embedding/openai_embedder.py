@@ -48,7 +48,9 @@ class OpenAIEmbedder:
         actual_dim = len(vectors[0]) if vectors else self._dimension
         return EmbeddingResult(vectors=vectors, provider=self.provider, dimension=actual_dim)
 
-    async def _embed_with_retry(self, headers: dict[str, str], texts: list[str]) -> list[list[float]]:
+    async def _embed_with_retry(
+        self, headers: dict[str, str], texts: list[str]
+    ) -> list[list[float]]:
         last_exc: Exception | None = None
         for attempt in range(1, 3):
             try:
@@ -65,7 +67,9 @@ class OpenAIEmbedder:
                 )
                 await asyncio.sleep(0.2 * attempt)
 
-        raise EmbeddingProviderError("embedding provider returned an unusable response") from last_exc
+        raise EmbeddingProviderError(
+            "embedding provider returned an unusable response"
+        ) from last_exc
 
     async def _embed_once(self, headers: dict[str, str], texts: list[str]) -> list[list[float]]:
         async with httpx.AsyncClient(timeout=6.0) as client:
