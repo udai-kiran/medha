@@ -233,6 +233,7 @@
 const MAX_ROWS = 500;
 let activeProject = null;
 let activeSession = null;
+let activeView = "events"; // "events" | "memories"
 // Maps session ID → project name (populated from sessions API responses)
 const sessionProjectMap = {};
 
@@ -280,7 +281,7 @@ function mkChip(label, onClose) {
 function addRow(evt) {
   const tr = document.createElement("tr");
   const ts = new Date(evt.timestamp).toLocaleTimeString();
-  tr.dataset.project = sessionProjectMap[evt.sessionId] || "";
+  tr.dataset.project = evt.project || sessionProjectMap[evt.sessionId] || "";
   tr.dataset.session = evt.sessionId || "";
   tr.innerHTML =
     `<td>${esc(ts)}</td>` +
@@ -323,13 +324,16 @@ function renderProjects(projects) {
 
 function selectProject(p, el) {
   if (activeProject === p) {
-    // deselect
     activeProject = null;
     activeSession = null;
     document.querySelectorAll(".sb-item").forEach(x => x.classList.remove("active"));
     document.getElementById("sessions-list").innerHTML = "";
     renderFilterChips();
-    applyFilter();
+    if (activeView === "memories") {
+      fetchMemories("");
+    } else {
+      applyFilter();
+    }
     return;
   }
   activeProject = p;
@@ -337,8 +341,12 @@ function selectProject(p, el) {
   document.querySelectorAll("#projects-list .sb-item").forEach(x => x.classList.remove("active"));
   el.classList.add("active");
   renderFilterChips();
-  applyFilter();
   fetchSessions(p);
+  if (activeView === "memories") {
+    fetchMemories(p);
+  } else {
+    applyFilter();
+  }
 }
 
 // ── sidebar: sessions ─────────────────────────────────────────────────
@@ -415,6 +423,7 @@ function fetchSessions(project) {
 }
 
 function fetchEvents(sessionID) {
+  activeView = "events";
   const url = sessionID
     ? `/api/events?session=${encodeURIComponent(sessionID)}&limit=200`
     : "/api/events?limit=200";
@@ -475,6 +484,7 @@ function esc(s) {
 
 // ── memories ──────────────────────────────────────────────────────────
 function fetchMemories(project) {
+  activeView = "memories";
   const url = project ? `/api/memories?project=${encodeURIComponent(project)}&limit=200` : "/api/memories?limit=200";
   fetch(url).then(r => r.ok ? r.json() : null).then(d => {
     if (!d || !d.memories) return;
@@ -484,6 +494,7 @@ function fetchMemories(project) {
       addRow({
         type: "memory",
         id: m.id,
+        project: m.project,
         timestamp: m.createdAt,
         payload: { tier: m.tier, title: m.title, strength: m.strength, content: m.content },
       });
