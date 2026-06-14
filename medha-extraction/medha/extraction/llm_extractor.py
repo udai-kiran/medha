@@ -70,23 +70,54 @@ class ExtractionOutcome:
     stages_run: list[str] = field(default_factory=list)
 
 
-_SYSTEM_PROMPT = (
-    "You extract a knowledge graph from a software agent's observation text.\n"
-    "Return MEANINGFUL, named entities only — the things a developer would want "
-    "to recall later: people, organizations, tools, libraries, services, "
-    "systems, protocols, files, and distinct technical concepts.\n"
-    "Do NOT emit raw code symbols, local variable names, function/identifier "
-    "tokens, generic words, pronouns, or title-cased sentence fragments "
-    "(e.g. 'The Go', 'This Python', 'Running Tests'). When unsure, omit it.\n"
-    "Every entity 'type' MUST be one of: PERSON, OBJECT, LOCATION, EVENT, "
-    "ORGANIZATION. Map tools/libraries/services/files/concepts to OBJECT and "
-    "put the finer kind in 'subtype' (e.g. LIBRARY, SERVICE, FILE, CONCEPT).\n"
-    "Every relationship 'type' MUST be one of: DEPENDS_ON, IMPLEMENTS, "
-    "WORKS_AT, RELATED_TO, CONTRADICTS, SUPERSEDES, DERIVED_FROM. Use a "
-    "relationship's 'source' and 'target' EXACTLY as they appear in your "
-    "entities list — never introduce a name you did not also list as an entity.\n"
-    "Respond ONLY with a JSON object. No prose, no markdown fences."
-)
+_SYSTEM_PROMPT = """\
+You extract a knowledge graph from a software agent's observation text.
+The graph feeds entity search and cross-session intelligence — extract durable,
+meaningful nodes only. Prefer precision over recall: a missed entity is harmless;
+a noisy one pollutes every future search that touches it.
+
+ENTITIES — named things a developer would want to recall across sessions:
+  tools, libraries, frameworks, services, databases, APIs, protocols, languages,
+  design patterns, and central file artefacts (config files, schema files, core
+  source files). NOT: local variables, temp files, one-off paths, generic class
+  names, code tokens, pronouns, or title-cased sentence fragments like "The Go".
+  Use the canonical official name: "PostgreSQL" not "postgres" or "Postgres db";
+  "GitHub Actions" not "GH Actions". When uncertain whether something qualifies, omit it.
+  Max 15 entities per observation.
+
+ENTITY TYPE — must be one of: PERSON · OBJECT · LOCATION · EVENT · ORGANIZATION
+  Nearly all software entities are OBJECT. Use subtype to be specific — must be
+  one of this closed set:
+    TOOL · LIBRARY · FRAMEWORK · SERVICE · DATABASE · API · PROTOCOL ·
+    LANGUAGE · FILE · CONCEPT · PATTERN · ORGANIZATION_UNIT
+  PERSON and ORGANIZATION: actual humans and companies only, not software components.
+  LOCATION and EVENT: rarely applicable in code observations — omit rather than force-fit.
+
+ENTITY CONFIDENCE — how certain is this entity meaningful in this observation?
+  0.9+   named explicitly and central to what happened
+  0.7–0.8 present but peripheral, or name inferred rather than stated
+  < 0.7  omit
+
+RELATIONSHIPS — structural or semantic connections only. "Both appear in the same
+  observation" is not a relationship. Each type has a fixed direction (source → target):
+    DEPENDS_ON   source requires target to function (imports, calls, extends)
+    IMPLEMENTS   source is a concrete implementation of target interface or spec
+    SUPERSEDES   source is the newer replacement for target
+    DERIVED_FROM source was built from or extends target
+    CONTRADICTS  source conflicts with, replaces, or invalidates target
+    WORKS_AT     PERSON works at ORGANIZATION
+    RELATED_TO   genuinely connected but no more specific type fits — use sparingly;
+                 never as a default; if you are unsure of the type, omit the relationship
+  source and target must be exact names from your entities list — never introduce
+  a name you did not also list as an entity.
+  Max 20 relationships per observation. Omit weak or speculative links.
+
+RELATIONSHIP CONFIDENCE:
+  0.9+   explicitly stated in the text
+  0.7–0.8 strongly implied by context
+  < 0.7  omit
+
+Respond ONLY with a JSON object. No prose, no markdown fences."""
 
 _USER_TEMPLATE = """\
 Observation text:
@@ -95,7 +126,7 @@ Observation text:
 Produce a JSON object with exactly these keys:
 {{
   "entities": [
-    {{"name": "exact name", "type": "OBJECT", "subtype": "LIBRARY", "confidence": 0.0-1.0}}
+    {{"name": "canonical name", "type": "OBJECT", "subtype": "LIBRARY", "confidence": 0.9}}
   ],
   "relationships": [
     {{"source": "entity name", "target": "entity name", "type": "DEPENDS_ON", "confidence": 0.9}}
