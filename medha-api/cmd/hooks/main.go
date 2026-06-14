@@ -42,7 +42,25 @@ func main() {
 
 	cfg := loadConfig(cwd)
 
+	debugFile := os.Getenv("AGENT_DEBUG_FILE")
+
+	dispatchStart := time.Now()
 	out := dispatch(base.HookEventName, cfg, cwd, raw, base)
+	dispatchMs := time.Since(dispatchStart).Milliseconds()
+
+	// B: write dispatch record immediately so it's durable even if drain hangs.
+	if debugFile != "" {
+		outJSON, _ := json.Marshal(out)
+		debugAppend(debugFile, map[string]any{
+			"ts":          time.Now().UTC().Format(time.RFC3339Nano),
+			"phase":       "dispatch",
+			"event":       base.HookEventName,
+			"session_id":  base.SessionID,
+			"in":          json.RawMessage(raw),
+			"out":         json.RawMessage(outJSON),
+			"dispatch_ms": dispatchMs,
+		})
+	}
 
 	// Write output first so Claude Code gets it without waiting for drain.
 	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
@@ -55,11 +73,26 @@ func main() {
 	if base.HookEventName == "Stop" || base.HookEventName == "SessionEnd" {
 		timeout = 10 * time.Second
 	}
+	drainStart := time.Now()
 	done := make(chan struct{})
 	go func() { asyncWG.Wait(); close(done) }()
+	timedOut := false
 	select {
 	case <-done:
 	case <-time.After(timeout):
+		timedOut = true
+	}
+
+	// C: write drain record after async goroutines complete (or time out).
+	if debugFile != "" {
+		debugAppend(debugFile, map[string]any{
+			"ts":        time.Now().UTC().Format(time.RFC3339Nano),
+			"phase":     "drain",
+			"event":     base.HookEventName,
+			"session_id": base.SessionID,
+			"drain_ms":  time.Since(drainStart).Milliseconds(),
+			"timed_out": timedOut,
+		})
 	}
 }
 
