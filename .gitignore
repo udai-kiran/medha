@@ -7,6 +7,11 @@ medha-api/bin/
 medha-api/api
 medha-api/mcp
 medha-api/worker
+medha-api/hooks
+medha-api/codex-hooks
+
+# Codex per-project install dir (contains machine-specific absolute paths)
+.codex/
 *.test
 *.out
 

@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>agent-mem — Architecture &amp; Design</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --card: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --dim: #8b949e;
+    --blue: #58a6ff;
+    --green: #3fb950;
+    --yellow: #d2991d;
+    --purple: #bc8cff;
+    --red: #f85149;
+    --orange: #db6d28;
+    --cyan: #39d2c0;
+    --pink: #ff7b72;
+  }
+  * { margin:0; padding:0; box-sizing:border-box }
+  body {
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px;
+  }
+  .container { max-width: 1200px; margin: 0 auto }
+  h1 { font-size: 28px; margin-bottom: 4px; color: var(--blue) }
+  .subtitle { color: var(--dim); margin-bottom: 32px; font-size: 16px }
+  h2 {
+    font-size: 20px; color: var(--green); border-bottom: 1px solid var(--border);
+    padding-bottom: 8px; margin: 40px 0 16px;
+  }
+  h3 { font-size: 16px; color: var(--yellow); margin: 24px 0 12px }
+  p { margin: 8px 0 }
+  code { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; background: #21262d; padding: 1px 6px; border-radius: 4px }
+  pre { background: #161b22; border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5 }
+  .diagram {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 20px; margin: 16px 0; font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px; line-height: 1.8; overflow-x: auto; white-space: pre
+  }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px }
+  th, td { padding: 8px 12px; text-align: left; border: 1px solid var(--border) }
+  th { background: #21262d; font-weight: 600 }
+  tr:nth-child(even) { background: #0d1117 }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600 }
+  .badge-go { background: #00ADD8; color: #000 }
+  .badge-py { background: #3776AB; color: #fff }
+  .badge-db  { background: #336791; color: #fff }
+  .badge-bus { background: #FF6600; color: #fff }
+  .badge-ext { background: #6600cc; color: #fff }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin: 12px 0;
+  }
+  .card h4 { margin: 0 0 8px; color: var(--purple); font-size: 14px }
+  .cols { display: grid; gap: 16px; margin: 12px 0 }
+  .cols-2 { grid-template-columns: 1fr 1fr }
+  .cols-3 { grid-template-columns: repeat(3, 1fr) }
+  .arrow { color: var(--dim); user-select: none }
+  .highlight { background: rgba(88,166,255,0.1); border-left: 3px solid var(--blue); padding: 4px 12px; margin: 8px 0 }
+  .env-var { color: var(--cyan); font-family: 'SF Mono', monospace; font-size: 13px }
+  @media (max-width: 768px) { .cols-2, .cols-3 { grid-template-columns: 1fr } }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>agent-mem</h1>
+<p class="subtitle">Long-term memory for Claude Code agents — ingestion, compression, search, consolidation</p>
+
+<!-- ================================================================== -->
+<h2>1. System Overview</h2>
+
+<div class="diagram">
+                         ┌────────────────────────────┐
+                         │    Claude Code Agent        │
+                         │  (hooks + MCP tools)        │
+                         └─────┬──────────────┬───────┘
+                               │              │
+                    HTTP REST  │              │  MCP Streamable HTTP
+                    /observe   │              │  /mcp (GET|POST)
+                    /smart-    │              │
+                    search     │              │
+                    /recall-   │              │
+                    summary    │              │
+                               ▼              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                        Go API  :3111                              │
+│  ┌─────────┐ ┌────────┐ ┌──────────┐ ┌───────────┐ ┌─────────┐  │
+│  │ observe │ │ search │ │ sessions │ │ memories  │ │   MCP   │  │
+│  │ handler │ │ hybrid │ │   API    │ │   API     │ │  server │  │
+│  └────┬────┘ └───┬────┘ └────┬─────┘ └─────┬─────┘ └────┬────┘  │
+│       │          │           │              │            │        │
+│  ┌────▼──────────▼───────────▼──────────────▼────────────▼────┐  │
+│  │                    state.Store (PostgreSQL)                 │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                   │
+│  Queue (in-memory / RabbitMQ) ──► Worker ──► call Python :5000   │
+│  /recall-summary → hybrid search → cleaned summary for hooks      │
+│  Viewer :3113  (WebSocket / SSE dashboard)                       │
+└──────────────────────────────────────────────────────────────────┘
+                               │  async callbacks
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                   Python sidecar  :5000                           │
+│  ┌──────────┐ ┌────────────┐ ┌──────────┐ ┌───────┐ ┌────────┐  │
+│  │/compress │ │ /summarize  │ │ /extract │ │/embed │ │/enrich │  │
+│  └─────┬────┘ └──────┬─────┘ └────┬─────┘ └───┬───┘ └───┬────┘  │
+│        │              │            │           │          │       │
+│        └──────────────┴────────────┴───────────┴──────────┘       │
+│                              │                                    │
+│                        Bifrost (LLM proxy)                        │
+│                              │                                    │
+│          ┌───────────────────┼───────────────────┐               │
+│          ▼                   ▼                   ▼               │
+│     Claude/OpenAI      Embedding API       Cohere rerank         │
+└──────────────────────────────────────────────────────────────────┘
+</div>
+
+<p>Two services, one system. The <strong>Go API</strong> handles all hot-path operations (ingest, search, state). The <strong>Python sidecar</strong> is called for LLM and embedding work through Bifrost/OpenRouter. Compression is async after observation ingest; prompt recall is synchronous and therefore has stricter filtering and timeout behavior.</p>
+
+<div class="cols cols-3">
+  <div class="card">
+    <h4><span class="badge badge-go">Go</span> medha-api/</h4>
+    <p>Ports: <code>:3111</code> API, <code>:3113</code> Viewer</p>
+    <p>Chi router with Bearer auth; local rate limiting disabled</p>
+    <p>PostgreSQL, FTS, Vector, Graph indexes</p>
+    <p>MCP Streamable HTTP server</p>
+  </div>
+  <div class="card">
+    <h4><span class="badge badge-py">Python</span> medha-extraction/</h4>
+    <p>Port: <code>:5000</code> FastAPI</p>
+    <p>LLM compression, summarization, extraction</p>
+    <p>Embedding via Bifrost/OpenRouter or local hashing</p>
+    <p>Structured request timing logs for /compress, /summarize, /embed</p>
+    <p>Wikipedia enrichment with SQLite cache</p>
+  </div>
+  <div class="card">
+    <h4><span class="badge badge-db">Infra</span> PostgreSQL</h4>
+    <p>Primary datastore — all state lives here</p>
+    <p>Auto-migrated on startup, forward-only</p>
+    <p>GIN indexes for full-text search</p>
+    <p>Optional Neo4j for graph enrichment</p>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>2. Five Binaries</h2>
+
+<table>
+  <tr><th>Binary</th><th>Entrypoint</th><th>Purpose</th></tr>
+  <tr>
+    <td><code>agent-mem-api</code></td>
+    <td><code>cmd/api</code></td>
+    <td>Main API + viewer + in-process worker + MCP mount</td>
+  </tr>
+  <tr>
+    <td><code>agent-mem-mcp</code></td>
+    <td><code>cmd/mcp</code></td>
+    <td>Standalone MCP HTTP server on :3114 (Docker)</td>
+  </tr>
+  <tr>
+    <td><code>agent-mem-worker</code></td>
+    <td><code>cmd/worker</code></td>
+    <td>Standalone async compression worker (RabbitMQ mode only)</td>
+  </tr>
+  <tr>
+    <td><code>agent-mem-hooks</code></td>
+    <td><code>cmd/hooks</code></td>
+    <td>Claude Code hook dispatcher — wires all 30 hook events; deployed per-project via <code>bin/install.sh</code></td>
+  </tr>
+  <tr>
+    <td><code>agent-mem-codex-hooks</code></td>
+    <td><code>cmd/codex-hooks</code></td>
+    <td>Codex hook dispatcher — wires all 10 Codex hook events; deployed per-project via <code>bin/install-codex.sh</code></td>
+  </tr>
+</table>
+
+<p>The <code>cmd/api</code> binary embeds an in-process worker when <span class="env-var">QUEUE_BACKEND=memory</span> (default). The separate <code>cmd/worker</code> binary is only needed for <span class="env-var">QUEUE_BACKEND=rabbitmq</span>.</p>
+
+<!-- ================================================================== -->
+<h2>3. Data Flow (End-to-End)</h2>
+
+<div class="diagram">
+                       Claude Code Agent
+                            │
+                 hook fires │ POST /v1/agentmemory/observe
+                            ▼
+              ┌─────────────────────────┐
+              │  1. Privacy Filter      │  strip &lt;private&gt; tags, secrets, ANSI
+              │  2. Dedup (SHA-256)     │  5-min rolling window per session
+              │  3. Store RawObservation│  INSERT into observations table
+              │  4. Enqueue compress    │  push onto MemoryQueue
+              └─────────┬───────────────┘
+                        │
+                        ▼  (async, in-process or RabbitMQ)
+              ┌─────────────────────────┐
+              │  Worker → Python :5000  │
+              │  POST /compress         │  ships project glossary for inline expansion
+              └─────────┬───────────────┘
+                        │
+                        ▼  (callback)
+              ┌─────────────────────────────┐
+              │  5. Python → Go            │
+              │  POST /internal/obs/{id}/   │
+              │  compressed                  │
+              │  6. Cosine Dedup (async)    │  embed index text → compare vs recent
+              │     sim ≥ DEDUP_COSINE_     │  session vectors → skip indexing if
+              │     THRESHOLD → skip index  │  near-duplicate (stored, not indexed)
+              │  7. Index into FTS + Vector │  GIN tsvector + cosine vector
+              └─────────────────────────────┘
+
+                       ... session ends ...
+
+                      "SessionEnd" hook fires
+              (Stop is a per-turn checkpoint only)
+                              │
+                              ▼
+              ┌──────────────────────────────┐
+              │  Consolidation Pipeline      │
+              │  fetch observations          │
+              │    → Python /summarize       │ SessionSummary row
+              │    → Python /extract         │ entities + relationships
+              │    → distill memories        │ INSERT memories rows
+              │    → persist                 │
+              └──────────────────────────────┘
+
+                    ... nightly cron ...
+
+              ┌──────────────────────────────┐
+              │  Decay Engine                │
+              │  strength *= rate^daysOld    │
+              │  evict below threshold       │ Ebbinghaus forgetting curve
+              └──────────────────────────────┘
+</div>
+
+<!-- ================================================================== -->
+<h2>4. Prompt Recall Path</h2>
+
+<div class="diagram">
+  UserPromptSubmit hook
+        │
+        ▼
+  agentmem-recall-hook
+        │  POST /v1/agentmemory/recall-summary
+        │  timeout: 20s, threshold: max relevance >= 0.01
+        ▼
+  Go RecallSummaryHandler
+        │
+        ├─ hybrid search overfetches (min 20, then trims to requested limit)
+        │
+        ├─ hydrate rows from PostgreSQL
+        │
+        ├─ prompt-facing cleanup
+        │    • drop unhydrated empty hits
+        │    • drop raw tool traces: Bash | {...}, Edit | {...}, Read | {...}
+        │    • drop empty notification observations
+        │
+        ├─ Python /summarize-memories if available
+        │
+        └─ bullet fallback if summarizer is down
+        ▼
+  hookSpecificOutput.additionalContext
+        │
+        ▼
+  Claude sees: "[agent-mem] Relevant context from memory: ..."
+</div>
+
+<p><code>/smart-search</code> remains a raw debugging/search endpoint. The cleanup above is intentionally scoped to <code>/recall-summary</code>, because that endpoint is what the Claude hook injects into the user prompt.</p>
+
+<!-- ================================================================== -->
+<h2>5. Search Pipeline (Hybrid RRF)</h2>
+
+<div class="diagram">
+           Query: "how does JWT auth work"
+                       │
+     ┌─────────────────┼─────────────────┐
+     ▼                 ▼                 ▼
+  PgFTS             Vector             Graph
+  tsquery &         cosine sim          entity BFS
+  ts_rank           (/embed)            (Neo4j or PG)
+                    bounded by
+                    HYBRID_VECTOR_TIMEOUT_SEC
+     │                 │                 │
+     ▼                 ▼                 ▼
+  result set        result set         result set
+  (token match)     (semantic)         (entity links)
+     │                 │                 │
+     └─────────────┬───┴─────────────────┘
+                   │
+                   ▼
+         Reciprocal Rank Fusion
+         k=60, score = 1/(k + rank)
+                   │
+                   ▼
+         Post-Fusion Multipliers
+         ┌─────────────────────────────────────┐
+         │ provenance boost: user 2.0× >       │
+         │   extracted 1.0× > episodic 0.7×    │
+         │                                     │
+         │ recency boost:                      │
+         │   1 + weight · exp(-age · ln2 / HL) │
+         │   weight=0.3, halfLife=7d           │
+         └─────────────────────────────────────┘
+                   │
+                   ▼
+         Optional Cross-Encoder Rerank
+         (Cohere rerank-4-fast via Bifrost)
+                   │
+                   ▼
+         Per-Session Diversity Cap (max 3)
+                   │
+                   ▼
+         Final ranked results
+</div>
+
+<p>The hybrid engine lives in <code>medha-api/internal/search/</code> and fuses three independent indexes. The RRF constant <code>k=60</code> is the standard TREC value. Vector search runs under a short per-query timeout so embedding/provider latency cannot dominate recall.</p>
+
+<div class="cols cols-2">
+  <div class="card">
+    <h4>PgFTS (<code>pgfts.go</code>)</h4>
+    <p>PostgreSQL <code>tsvector</code>/<code>ts_rank</code> over a GIN index.</p>
+    <p>TSQuery expander (LLM) converts natural language to structured <code>ts_query</code> strings.</p>
+    <p>Batch-loads provenance for fused vector/graph hits before post-fusion boosts.</p>
+    <p>Replaced the former hand-rolled BM25 engine.</p>
+  </div>
+  <div class="card">
+    <h4>Vector (<code>vector.go</code>)</h4>
+    <p>Cosine similarity via Python <code>/embed</code> endpoint.</p>
+    <p>Go HTTP timeout is controlled by <span class="env-var">EMBEDDING_REQUEST_TIMEOUT_SEC</span>.</p>
+    <p>Hybrid vector leg is bounded by <span class="env-var">HYBRID_VECTOR_TIMEOUT_SEC</span>.</p>
+    <p>Model fingerprint guards against silent reindex mismatch.</p>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>6. PostgreSQL Schema</h2>
+
+<table>
+  <tr><th>Table</th><th>Key Columns</th><th>Purpose</th></tr>
+  <tr>
+    <td><code>sessions</code></td>
+    <td>id, project, status, started_at, ended_at</td>
+    <td>One row per agent conversation lifecycle</td>
+  </tr>
+  <tr>
+    <td><code>observations</code></td>
+    <td>id, session_id, hook_type, tool_name, raw_json, compressed, title, facts_json, concepts_json</td>
+    <td>Every RawObservation + CompressedObservation. <code>compressed=0</code> = raw, <code>=1</code> = compressed</td>
+  </tr>
+  <tr>
+    <td><code>memories</code></td>
+    <td>id, project, type, tier, provenance, title, content, concepts_json, strength</td>
+    <td>Distilled facts from consolidation pipeline. Types: architecture|pattern|preference|bug|workflow|fact</td>
+  </tr>
+  <tr>
+    <td><code>session_summaries</code></td>
+    <td>session_id, summary, entities_json, facts_json</td>
+    <td>One row per consolidated session</td>
+  </tr>
+  <tr>
+    <td><code>kv</code></td>
+    <td>scope, key, value</td>
+    <td>35-scope key-value store (e.g. abbreviations glossary uses "abbreviations" scope)</td>
+  </tr>
+  <tr>
+    <td><code>pgfts_docs</code></td>
+    <td>obs_id, project, tsvector_col, provenance, indexed_at</td>
+    <td>FTS index backing <code>pgfts.go</code>. GIN index on tsvector_col</td>
+  </tr>
+</table>
+
+<p>Migrations live in <code>medha-api/internal/state/schema.go</code> — forward-only, idempotent, never edited. The schema prefers <strong>JSON-as-TEXT</strong> columns over normalized side tables for evolving structures.</p>
+
+<p><strong>Memory Tiers:</strong> <code>working</code> (24h TTL) → <code>episodic</code> (7d TTL) → <code>semantic</code> (long-lived) → <code>procedural</code> (permanent)</p>
+
+<!-- ================================================================== -->
+<h2>7. API Routes</h2>
+
+<p>All agent-facing routes live under <code>/v1/agentmemory</code> with Bearer auth. Rate limiting support exists in the router dependencies, but local agent-memory deployments wire it as disabled so hook and maintenance bursts are accepted. Internal callback routes live under <code>/internal</code>.</p>
+
+<div class="cols cols-2">
+  <div class="card">
+    <h4>Public (Agent-Facing)</h4>
+    <table>
+      <tr><th>Method</th><th>Route</th><th>Handler</th></tr>
+      <tr><td>POST</td><td><code>/observe</code></td><td>ObserveHandler</td></tr>
+      <tr><td>POST</td><td><code>/smart-search</code></td><td>SmartSearchHandler</td></tr>
+      <tr><td>POST</td><td><code>/search</code></td><td>SmartSearchHandler (alias)</td></tr>
+      <tr><td>POST</td><td><code>/recall-summary</code></td><td>RecallSummaryHandler (prompt-facing cleaned recall)</td></tr>
+      <tr><td>GET|POST</td><td><code>/mcp</code></td><td>MCP Streamable HTTP</td></tr>
+    </table>
+    <p style="margin-top:8px">+ 20 typed API structs: SessionAPI, MemoryAPI, ObservationsAPI, InternalAPI, OrchestrationAPI, TeamAPI, ProfileAPI, PatternsAPI, TimelineAPI, ExportAPI, DiagnoseAPI, ConversationsAPI, PreferencesAPI, FactsAPI, TracesAPI, EntitiesAPI, SlotsAPI, GovernanceAPI, AdvancedRetrievalAPI, PlatformAPI, ContextAPI</p>
+  </div>
+  <div class="card">
+    <h4>Internal (Python → Go Callbacks)</h4>
+    <table>
+      <tr><th>Method</th><th>Route</th><th>Purpose</th></tr>
+      <tr><td>POST</td><td><code>/internal/observation/{id}/compressed</code></td><td>Store compressed result</td></tr>
+      <tr><td>GET</td><td><code>/internal/observation/{id}</code></td><td>Fetch observation by ID</td></tr>
+      <tr><td>POST</td><td><code>/internal/session/{id}/consolidated</code></td><td>Store consolidated result</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ================================================================== -->
+<h2>8. MCP Tool Surface</h2>
+
+<p>The MCP server registers <strong>27+ tools</strong> across two files, using Streamable HTTP transport (MCP spec 2025-06-18). Tools delegate directly to the REST layer — no duplicate business logic.</p>
+
+<div class="cols cols-2">
+  <div class="card">
+    <h4>Core tools (<code>tools.go</code>)</h4>
+    <p><code>smart-search</code>, <code>remember</code>, <code>recall</code>, <code>forget</code>,
+       <code>status</code>, <code>session-history</code>, <code>timeline</code>,
+       <code>profile</code>, <code>patterns</code>, <code>get-context</code></p>
+  </div>
+  <div class="card">
+    <h4>Extended (<code>tools_extended.go</code>)</h4>
+    <p>Orchestration: <code>plan-create</code>, <code>plan-update</code>, <code>team-list</code>, <code>team-claim</code></p>
+    <p>Working: <code>slots-create</code>, <code>slots-get</code>, <code>summarize</code></p>
+    <p>Advanced retrieval: <code>facts-search</code>, <code>preferences-search</code>, <code>traces</code></p>
+    <p>Entity intelligence: <code>entities-search</code>, <code>graph-traverse</code></p>
+    <p>Platform: <code>list-projects</code>, <code>export</code>, <code>diagnose</code>, <code>governance</code></p>
+  </div>
+</div>
+
+<p>The <code>wrap()</code> adapter in <code>tools.go</code> converts internal handlers (plain <code>func(ctx, args) (any, error)</code>) to SDK <code>ToolHandler</code> — no handler touches SDK types directly, keeping tool bodies testable without the MCP runtime.</p>
+
+<!-- ================================================================== -->
+<h2>9. Go Component Map</h2>
+
+<div class="diagram">
+  medha-api/
+  ├── cmd/
+  │   ├── api/main.go        ← wires everything: store, queue, search, worker, viewer, MCP
+  │   ├── mcp/main.go        ← standalone MCP server binary
+  │   └── worker/main.go     ← standalone RabbitMQ consumer
+  │
+  └── internal/
+      ├── state/              ← PostgreSQL: store, schema migrations, kv
+      │   schema.go           ← forward-only migrations (never edit, only append)
+      │   store.go            ← pool, health, CRUD
+      │   kv.go               ← 35-scope key-value on top of kv table
+      │   glossary.go         ← per-project abbreviation glossary (scope="abbreviations")
+      ├── api/                ← HTTP handlers (one file per feature area)
+      │   router.go           ← Chi router wiring, middleware stack
+      │   observe.go          ← POST /observe (privacy→dedup→store→enqueue)
+      │   search.go           ← POST /smart-search (hybrid RRF)
+      │   recall_summary.go   ← POST /recall-summary (cleaned prompt context)
+      │   sessions.go         ← SessionAPI
+      │   memories.go         ← MemoryAPI
+      │   internal_callback.go← InternalAPI (Python callbacks)
+      │   ... (21 API structs)
+      ├── search/             ← Three indexes + hybrid fusion
+      │   pgfts.go            ← PostgreSQL FTS (tsvector GIN)
+      │   vector.go           ← cosine similarity (Python /embed)
+      │   graph.go            ← entity BFS (PostgreSQL + optional Neo4j)
+      │   rrf.go              ← Reciprocal Rank Fusion (k=60)
+      │   reranker.go         ← cross-encoder rerank (Cohere via Python)
+      │   tsquery_expander.go ← LLM natural-language → ts_query
+      ├── models/             ← Shared domain types
+      │   memory.go           ← Memory, MemoryType, MemoryTier enums
+      │   observation.go      ← RawObservation, CompressedObservation
+      │   session.go          ← SessionSummary
+      ├── consolidation/      ← Async pipeline + decay
+      │   queue.go, queue_memory.go  ← Queue interface + in-memory impl
+      │   worker.go           ← consumes queue → Python /compress
+      │   pipeline.go         ← SessionEnd DAG: summarize → extract → distill
+      │   decay.go            ← Ebbinghaus nightly decay
+      ├── mcp/                ← MCP server (Streamable HTTP)
+      │   tools.go            ← core tools + wrap() adapter
+      │   tools_extended.go   ← 27+ extended tools
+      │   resources.go        ← MCP resources/prompts
+      ├── dedup/              ← SHA-256 rolling window per session (ingestion-time)
+      │   window.go           ← 5-minute exact-match deduplication
+      │                          cosine dedup lives in internal_callback.go (async,
+      │                          post-compression, via VectorIndex.MaxSessionSimilarity)
+      ├── privacy/            ← Fail-closed filter pipeline
+      │   filter.go           ← &lt;private&gt; strip + secret redaction
+      │   ansi.go             ← ANSI escape removal
+      ├── telemetry/          ← slog logger + Prometheus metrics
+      ├── graph/              ← Optional Neo4j Bolt driver
+      ├── config/             ← Single-source env vars (FromEnv())
+      ├── viewer/             ← WebSocket hub + SSE dashboard (:3113)
+      └── testutil/           ← test DB helpers (POSTGRES_TEST_HOST guard)
+</div>
+
+<!-- ================================================================== -->
+<h2>10. Python Component Map</h2>
+
+<div class="diagram">
+  medha-extraction/
+  ├── medha/
+  │   ├── api.py              ← FastAPI: /compress, /summarize, /extract, /embed, /enrich, /health
+  │   │                          request timing middleware logs duration_ms per route
+  │   ├── config.py           ← Settings from env
+  │   ├── models.py           ← Pydantic: RawObservation, CompressedObservation, Entity, Relationship
+  │   │
+  │   ├── compression/
+  │   │   llm_compressor.py   ← LLM → XML-structured output
+  │   │   synthetic_compressor.py ← No-LLM fallback
+  │   │   validator.py        ← validate_compressed() post-process
+  │   │
+  │   ├── summarization/
+  │   │   session_summarizer.py ← LLM → SessionSummary (or synthetic)
+  │   │
+  │   ├── extraction/
+  │   │   pipeline.py         ← Heuristic + optional LLM entity extraction
+  │   │
+  │   ├── llm/
+  │   │   client.py           ← build_llm_client() factory → OpenAICompatibleClient
+  │   │   openai_compat.py    ← Bifrost /v1 proxy (OpenAI-compatible API)
+  │   │
+  │   ├── embedding/
+  │   │   openai_embedder.py  ← Bifrost/OpenRouter embeddings (text-embedding-3-small, etc.); validates provider responses and retries briefly
+  │   │   local_embedder.py   ← Fallback: local hashing
+  │   │   providers.py        ← pick_embedder() dispatch
+  │   │
+  │   ├── enrichment/
+  │   │   enricher.py         ← Wikipedia lookup with SQLite cache
+  │   │
+  │   └── utils/
+  │       logging.py          ← structlog configuration
+  │
+  └── tests/
+      test_*.py               ← pytest + cov
+</div>
+
+<!-- ================================================================== -->
+<h2>11. Hooks System</h2>
+
+<p>Installed via <code>./bin/install.sh [TARGET_DIR]</code> into any project's <code>.claude/</code> directory. Hooks are plain shell scripts that POST to the API.</p>
+
+<table>
+  <tr><th>Claude Hook</th><th>Shell Script</th><th>What It Does</th></tr>
+  <tr>
+    <td><code>UserPromptSubmit</code></td>
+    <td><code>agentmem-recall-hook</code></td>
+    <td>Calls /recall-summary and injects structured <code>additionalContext</code>; debug output is gated behind <code>AGENTMEMORY_HOOK_DEBUG=1</code></td>
+  </tr>
+  <tr>
+    <td><code>PostToolUse</code> (Bash|Edit|Write|Read|…)</td>
+    <td><code>agentmem-tool-hook</code></td>
+    <td>Observe every tool invocation (POST /observe)</td>
+  </tr>
+  <tr>
+    <td><code>PostToolUse</code> (Edit|Write)</td>
+    <td><code>agentmem-md-procedural-hook</code></td>
+    <td>Procedural memory extraction from file edits</td>
+  </tr>
+  <tr>
+    <td><code>Notification</code></td>
+    <td><code>agentmem-notify-hook</code></td>
+    <td>Record notifications; empty/no-detail notifications are filtered out of prompt recall</td>
+  </tr>
+  <tr>
+    <td><code>Stop</code></td>
+    <td><code>agentmem-session-end-hook</code></td>
+    <td>Per-turn checkpoint: captures turn summary. Full consolidation pipeline is triggered by <code>SessionEnd</code>, not Stop.</td>
+  </tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>12. Abbreviation Glossary Flow</h2>
+
+<div class="diagram">
+  Gated by ABBREVIATION_EXPANSION_ENABLED=true
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │ Per-project glossary stored in kv table (scope=abbreviations)│
+  │ Example: {"trx":"transaction", "cfg":"configuration"}       │
+  └──────────────────────┬──────────────────────────────────────┘
+                         │
+   Worker prepares       │  ships glossary in compress request
+   compress job          ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │ POST /compress { ..., glossary: {"trx":"transaction"} }     │
+  │                                                              │
+  │ LLM sees expanded text: "... commit the trx [transaction]"   │
+  │ LLM generates: title, facts, concepts                       │
+  │ LLM may detect new abbreviations → returned in response     │
+  └──────────────────────┬──────────────────────────────────────┘
+                         │
+   Callback merges       ▼
+   new pairs             │
+  ┌─────────────────────────────────────────────────────────────┐
+  │ POST /internal/obs/{id}/compressed                          │
+  │   { ..., new_abbreviations: [{"short":"DDL","long":"Data    │
+  │   Definition Language"}] }                                   │
+  │                                                              │
+  │ Go side: first-write-wins, per-project, capped at 200 pairs │
+  └─────────────────────────────────────────────────────────────┘
+</div>
+
+<!-- ================================================================== -->
+<h2>13. Key Configuration</h2>
+
+<table>
+  <tr><th>Env Var</th><th>Default</th><th>Notes</th></tr>
+  <tr><td><span class="env-var">PORT</span></td><td>3111</td><td>Go API listen port</td></tr>
+  <tr><td><span class="env-var">VIEWER_PORT</span></td><td>3113</td><td>WebSocket/SSE dashboard</td></tr>
+  <tr><td><span class="env-var">POSTGRES_HOST</span></td><td>localhost</td><td></td></tr>
+  <tr><td><span class="env-var">POSTGRES_DB</span></td><td>medha</td><td></td></tr>
+  <tr><td><span class="env-var">AGENTMEMORY_SECRET</span></td><td>(empty)</td><td>Bearer token; empty = dev mode</td></tr>
+  <tr><td><span class="env-var">QUEUE_BACKEND</span></td><td>memory</td><td>rabbitmq for prod</td></tr>
+  <tr><td><span class="env-var">BIFROST_URL</span></td><td><strong>(required)</strong></td><td>LLM/embedding proxy endpoint</td></tr>
+  <tr><td><span class="env-var">LLM_MODEL</span></td><td>(empty)</td><td>anthropic/claude-3-5-haiku etc.</td></tr>
+  <tr><td><span class="env-var">EMBEDDING_MODEL</span></td><td>(empty)</td><td>Embedding provider/model. Current local default is <code>openai/text-embedding-3-small</code> for 1536-dim vectors; changing dimensions requires rebuilding the vector index/database.</td></tr>
+  <tr><td><span class="env-var">EMBEDDING_REQUEST_TIMEOUT_SEC</span></td><td>5</td><td>Go → Python <code>/embed</code> HTTP timeout</td></tr>
+  <tr><td><span class="env-var">HYBRID_VECTOR_TIMEOUT_SEC</span></td><td>2</td><td>Maximum time the hybrid search vector leg may spend before the fused search continues without it</td></tr>
+  <tr><td><span class="env-var">DECAY_RATE_PER_DAY</span></td><td>0.95</td><td>Ebbinghaus base rate</td></tr>
+  <tr><td><span class="env-var">DECAY_EVICTION_THRESHOLD</span></td><td>0.1</td><td>Hard-evict below this strength</td></tr>
+  <tr><td><span class="env-var">SEARCH_RECENCY_WEIGHT</span></td><td>0.3</td><td>Post-RRF recency boost</td></tr>
+  <tr><td><span class="env-var">SEARCH_RECENCY_HALFLIFE_DAYS</span></td><td>7</td><td>Age at which recency bonus halves</td></tr>
+  <tr><td><span class="env-var">ABBREVIATION_EXPANSION_ENABLED</span></td><td>true</td><td>Per-project abbreviation glossary</td></tr>
+  <tr><td><span class="env-var">DEDUP_COSINE_THRESHOLD</span></td><td>0 (disabled)</td><td>Async cosine dedup threshold. Near-duplicate observations (sim ≥ threshold within the window) are stored but not indexed. Requires a real <code>EMBEDDING_MODEL</code>; 0.92 is a good starting value for text-embedding-3-small</td></tr>
+  <tr><td><span class="env-var">DEDUP_COSINE_WINDOW_SEC</span></td><td>300</td><td>Rolling window (seconds) for session-scoped cosine dedup comparisons</td></tr>
+  <tr><td><span class="env-var">PYTHON_SERVICE_URL</span></td><td>http://localhost:5000</td><td>Go → Python calls</td></tr>
+  <tr><td><span class="env-var">AGENTMEMORY_HOOK_DEBUG</span></td><td>0</td><td>When set to 1, recall hook diagnostics are printed to stderr. Keep disabled for Claude hook JSON parsing.</td></tr>
+  <tr><td><span class="env-var">LOG_LEVEL</span> / <span class="env-var">PY_LOG_LEVEL</span></td><td>info</td><td>Set to debug for request body previews, provider timing, and sidecar route duration logs</td></tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>14. Key Design Decisions (ADRs)</h2>
+
+<table>
+  <tr><th>#</th><th>Decision</th></tr>
+  <tr><td>ADR-0001</td><td>Queue backend: memory (dev) or rabbitmq (prod), controlled by <span class="env-var">QUEUE_BACKEND</span></td></tr>
+  <tr><td>ADR-0002</td><td>Ebbinghaus decay constants are config-driven (no recompile needed to tune)</td></tr>
+  <tr><td>ADR-0003</td><td>Neo4j is optional; service degrades gracefully when disabled</td></tr>
+  <tr><td>ADR-0004</td><td>All REST routes under <code>/v1/agentmemory/</code> base path</td></tr>
+  <tr><td>ADR-0005</td><td>MCP tools delegate to REST logic — no duplicate business logic in MCP layer</td></tr>
+  <tr><td>ADR-0006</td><td>Extraction defaults to heuristic (no heavy NLP dependency on cold start)</td></tr>
+  <tr><td>ADR-0007</td><td>Prompt injection uses <code>/recall-summary</code>, not raw <code>/smart-search</code>, so noisy operational observations can be filtered without hiding them from debugging tools</td></tr>
+  <tr><td>ADR-0008</td><td>Embedding retrieval has explicit time budgets; if the vector leg is slow or unavailable, hybrid search still returns FTS/graph results</td></tr>
+</table>
+
+<!-- ================================================================== -->
+<h2>15. Decay Model (Ebbinghaus)</h2>
+
+<div class="diagram">
+  Nightly scheduler:
+    for each memory row:
+      age_days = now - created_at (in days)
+      strength *= DECAY_RATE_PER_DAY ^ age_days
+
+    if strength < DECAY_EVICTION_THRESHOLD:
+      DELETE memory
+
+    On retrieval (smart-search hit):
+      strength += REINFORCEMENT_ON_RETRIEVAL (0.05)
+
+  Tier TTLs (before decay even matters):
+    working:  24h
+    episodic: 7d (after which transitions to semantic)
+</div>
+
+<!-- ================================================================== -->
+<h2>16. Privacy Pipeline</h2>
+
+<div class="diagram">
+  POST /observe arrives with raw hook payload
+      │
+      ▼
+  1. Strip &lt;private&gt;...&lt;/private&gt; blocks  (most important, runs first)
+      │
+      ▼
+  2. Redact secrets: API keys, JWTs, key=value patterns
+      │
+      ▼
+  3. Remove ANSI escape sequences
+      │
+      ▼
+  4. Set HasSecrets flag → downstream enrichment is skipped
+      │
+      ▼
+  5. Continue to dedup → store → enqueue
+</div>
+
+<p>Privacy is <strong>fail-closed</strong> — if any filter step panics, the observation is dropped rather than persisted unsanitized.</p>
+
+<!-- ================================================================== -->
+<h2>17. Commands Cheat Sheet</h2>
+
+<pre>
+# First-time
+cp .env.example .env && make setup
+
+# Build
+make build          # binaries → medha-api/bin/
+
+# Test
+make test           # go test -race -cover + pytest --cov
+
+# Run (3 terminals)
+make run-go         # API :3111 + viewer :3113
+make run-py         # Python :5000
+make worker         # async worker (optional)
+
+# Or via Docker
+make run            # docker-compose.local.yml (builds from source)
+make run-pull       # pull pre-built image
+
+# Full stack
+make compose-up     # Go + Python + Neo4j + RabbitMQ
+make compose-light  # Go + Python only
+
+# Lint
+make lint           # golangci-lint + ruff + mypy
+
+# Install hooks into another project
+./bin/install.sh /path/to/project
+
+# Smoke test
+curl -s localhost:3111/agentmemory/health | jq
+curl -s localhost:5000/health | jq
+</pre>
+
+</div>
+</body>
+</html>
