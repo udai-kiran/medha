@@ -39,16 +39,50 @@ class LLMCompressorConfig:
 # the merge when ABBREVIATION_EXPANSION_ENABLED=false). The only cost when
 # disabled is a few prompt tokens, which we accept rather than threading a
 # per-request "detect" flag through the wire.
-_SYSTEM_PROMPT = (
-    "You compress agent observations into structured JSON for long-term memory.\n"
-    "Extract facts, narrative, concepts, files, and an importance score (0-10).\n"
-    "Also detect abbreviations and their expansions. Only include an abbreviation "
-    "when you are confident of its expansion: prefer an expansion that appears in "
-    "the observation text itself, and otherwise use a well-known expansion only if "
-    "you are certain. OMIT anything you cannot confidently expand — never guess. "
-    "Return at most 20 abbreviations.\n"
-    "Respond ONLY with a JSON object. No prose, no markdown fences."
-)
+_SYSTEM_PROMPT = """\
+You compress software agent observations into structured JSON for a long-term memory system.
+The output feeds semantic search, entity extraction, and session summarisation — be specific
+and searchable, not generic. Every field should help a future agent recall why this mattered.
+
+TYPE — pick the single best match:
+  file_read · file_edit · command · test · search · decision · error · discovery · other
+
+TITLE — verb-object form, max 120 chars. Mention the key artefact.
+  Good: "Fixed JWT expiry bug in auth middleware"  "Read Postgres schema migration"
+  Bad:  "The agent read a file"  "Command executed"
+
+SUBTITLE — one-line qualification when the title alone is ambiguous (e.g. the affected
+  file path, the error type, or the test suite name). Omit if the title is self-contained.
+
+FACTS — atomic, standalone assertions a future agent can use without surrounding context.
+  Each fact must make sense recalled in isolation: "The jose library handles JWT validation
+  in src/auth.ts" not "It uses jose". Aim for 2-5 facts. Never repeat the narrative.
+
+NARRATIVE — 1-2 sentences: what happened and why it matters. Complements the facts;
+  does not duplicate them. Empty string if the observation is too low-signal to narrate.
+
+CONCEPTS — technical terms that enable search: library names, tool names, file/module
+  names, design patterns, domain concepts, error codes. NOT generic nouns (file, code,
+  function, output, result). Max 10, ordered by relevance.
+
+FILES — only paths that appear verbatim in the observation input or output.
+  Never infer, reconstruct, or guess a path. Empty array if none are present.
+
+IMPORTANCE — integer 0-10:
+  0-2  trivial  : navigation, listing dirs, reading unchanged config, no-op commands
+  3-5  routine  : reading code, running passing tests, simple informational commands
+  6-8  significant: file edits, bug fixes, new dependencies added, test failures diagnosed
+  9-10 critical : architectural decisions, security findings, data-loss risks, major discoveries
+
+ABBREVIATIONS — detect abbreviation→expansion pairs present in or strongly implied by the
+  text. Only include when the expansion appears verbatim in the observation or is
+  unambiguous (e.g. JWT→JSON Web Token, CI→Continuous Integration). Never guess. Max 20.
+
+LOW-SIGNAL RULE: if the observation is pure navigation, has empty/trivial output, or
+  conveys no durable information, set importance ≤ 2 and leave facts/concepts/files empty
+  rather than manufacturing content.
+
+Respond ONLY with a JSON object. No prose, no markdown fences."""
 
 _USER_TEMPLATE = """\
 Observation:
@@ -59,13 +93,13 @@ Observation:
 
 Produce a JSON object with exactly these keys:
 {{
-  "type": "file_read|file_edit|command|search|...",
-  "title": "short title (max 120 chars)",
-  "subtitle": "optional subtitle",
-  "facts": ["concise fact", ...],
-  "narrative": "1-2 sentence summary",
-  "concepts": ["concept", ...],
-  "files": ["path/to/file", ...],
+  "type": "file_read|file_edit|command|test|search|decision|error|discovery|other",
+  "title": "verb-object title (max 120 chars)",
+  "subtitle": "one-line qualification or empty string",
+  "facts": ["standalone atomic fact", ...],
+  "narrative": "1-2 sentences or empty string",
+  "concepts": ["searchable technical term", ...],
+  "files": ["verbatim/path/from/observation", ...],
   "importance": 5,
   "abbreviations": {{"ABBR": "Full Expansion", ...}}
 }}"""
